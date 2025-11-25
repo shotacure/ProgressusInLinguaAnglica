@@ -9,6 +9,9 @@ using ProgressusInLinguaAnglica.Xa;
 
 namespace ProgressusInLinguaAnglica
 {
+    /// <summary>
+    /// メインフォーム
+    /// </summary>
     public partial class MainForm : Form
     {
         private string? _rootPath;
@@ -39,7 +42,7 @@ namespace ProgressusInLinguaAnglica
         }
 
         /// <summary>
-        /// 
+        /// コンストラクタ
         /// </summary>
         public MainForm()
         {
@@ -52,57 +55,57 @@ namespace ProgressusInLinguaAnglica
         }
 
         /// <summary>
-        /// 
+        /// ファイルメニュー - フォルダを開く
         /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
+        /// <param name="sender">イベント送信元オブジェクト</param>
+        /// <param name="e">イベントパラメータ</param>
         private void menuFileOpenFolder_Click(object? sender, EventArgs e)
         {
             BrowseAndLoadFolder();
         }
 
         /// <summary>
-        /// 
+        /// ファイルメニュー - 終了
         /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
+        /// <param name="sender">イベント送信元オブジェクト</param>
+        /// <param name="e">イベントパラメータ</param>
         private void menuFileExit_Click(object? sender, EventArgs e)
         {
             Close();
         }
 
         /// <summary>
-        /// 
+        /// 参照ボタン
         /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
+        /// <param name="sender">イベント送信元オブジェクト</param>
+        /// <param name="e">イベントパラメータ</param>
         private void btnBrowseFolder_Click(object? sender, EventArgs e)
         {
             BrowseAndLoadFolder();
         }
-        
+
         /// <summary>
-        /// 
+        /// リストボックスダブルクリック
         /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
+        /// <param name="sender">イベント送信元オブジェクト</param>
+        /// <param name="e">イベントパラメータ</param>
         private void lstChapters_DoubleClick(object? sender, EventArgs e)
         {
             PlaySelectedChapter();
         }
 
         /// <summary>
-        /// 
+        /// 再生ボタンクリック
         /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
+        /// <param name="sender">イベント送信元オブジェクト</param>
+        /// <param name="e">イベントパラメータ</param>
         private void btnPlaySelected_Click(object? sender, EventArgs e)
         {
             PlaySelectedChapter();
         }
 
         /// <summary>
-        /// 
+        /// ファイル参照ダイアログ表示
         /// </summary>
         private void BrowseAndLoadFolder()
         {
@@ -118,9 +121,9 @@ namespace ProgressusInLinguaAnglica
         }
 
         /// <summary>
-        /// 
+        /// ディスク読み取り
         /// </summary>
-        /// <param name="path"></param>
+        /// <param name="path">ディスクディレクトリのパス</param>
         private void LoadRoot(string path)
         {
             try
@@ -183,7 +186,7 @@ namespace ProgressusInLinguaAnglica
         }
 
         /// <summary>
-        /// 
+        /// 初期化
         /// </summary>
         private void ClearState()
         {
@@ -208,7 +211,7 @@ namespace ProgressusInLinguaAnglica
 
 
         /// <summary>
-        /// 
+        /// 選択チャプター再生
         /// </summary>
         private void PlaySelectedChapter()
         {
@@ -231,8 +234,7 @@ namespace ProgressusInLinguaAnglica
         }
 
         /// <summary>
-        /// _tracks から、インデックス／サブインデックス単位のセグメント一覧を組み立てて
-        /// lstChapters に流し込む。
+        /// _tracks から、インデックス／サブインデックス単位のセグメント一覧を組み立てて lstChapters に流し込む。
         /// </summary>
         private void RebuildSegmentListItems()
         {
@@ -320,39 +322,39 @@ namespace ProgressusInLinguaAnglica
         }
 
         /// <summary>
-        /// 
+        /// インデックス行成形する
         /// </summary>
-        /// <param name="chapNo"></param>
-        /// <param name="index"></param>
-        /// <param name="seg"></param>
-        /// <param name="track"></param>
-        /// <returns></returns>
+        /// <param name="chapNo">チャプター番号</param>
+        /// <param name="index">インデックス</param>
+        /// <param name="seg">セグメント</param>
+        /// <param name="track">トラックテーブル</param>
+        /// <returns>インデックス行文字列</returns>
         private static string FormatIndexLine(int chapNo, TrackIndex index, Segment seg, TrackTable track)
         {
             string idxText = index.IndexNumber.ToString("00");
-            string s = TblParser.FormatFrameAsTimeWithSector(seg.StartFrame);
-            string e = TblParser.FormatFrameAsTimeWithSector(seg.EndFrame);
+            string s = TblParser.FormatFrameAsTimeWithSector(seg.StartFrame, seg.StartByte);
+            string e = TblParser.FormatFrameAsTimeWithSector(seg.EndFrame, seg.StartByte);
             string idxCtrl = index.ControlWord.ToString("X8");
 
-            // [001]-(00) 43:28_25 - 44:38_74 / ch00 / mode00 / 01000000
+            // [001]-(00) 43:28_25<00> - 44:38_74<00> / ch00 / 01000000
             return $"[{chapNo:000}]-({idxText}) {s} - {e} / ch{track.Header.Channel:00} / {idxCtrl}";
         }
 
         /// <summary>
-        /// 
+        /// サブインデックス行成形
         /// </summary>
-        /// <param name="chapNo"></param>
-        /// <param name="index"></param>
-        /// <param name="sub"></param>
-        /// <param name="track"></param>
-        /// <param name="isFirstInIndex"></param>
+        /// <param name="chapNo">チャプター番号</param>
+        /// <param name="index">インデックス</param>
+        /// <param name="sub">サブインデックス</param>
+        /// <param name="track">トラックテーブル</param>
+        /// <param name="isFirstInIndex">インデックスの先頭サブインデックスか</param>
         /// <returns></returns>
         private static string FormatSubIndexLine(int chapNo, TrackIndex index, TrackSubIndex sub, TrackTable track, bool isFirstInIndex)
         {
             string idxText = index.IndexNumber.ToString("00");
             string subText = sub.SubNumber.ToString("00");
-            string s = TblParser.FormatFrameAsTimeWithSector(sub.StartFrame);
-            string e = TblParser.FormatFrameAsTimeWithSector(sub.EndFrame);
+            string s = TblParser.FormatFrameAsTimeWithSector(sub.StartFrame, sub.StartByte);
+            string e = TblParser.FormatFrameAsTimeWithSector(sub.EndFrame, sub.EndByte);
 
             string subCtrl = sub.ControlWord.ToString("X8");
             string tail = $"/ ch{track.Header.Channel:00} / {subCtrl}";
@@ -444,7 +446,7 @@ namespace ProgressusInLinguaAnglica
                 _currentAudioStream.Position = 0;
 
                 _currentSegmentIndex = listIndex;
-                lstChapters.SelectedIndex = listIndex; // ★再生中のセグメント行を選択状態にする
+                lstChapters.SelectedIndex = listIndex; // 再生中のセグメント行を選択状態にする
 
                 statusLabel.Text = item.DisplayText;
                 _player = new SoundPlayer(_currentAudioStream);
@@ -478,8 +480,8 @@ namespace ProgressusInLinguaAnglica
         /// <summary>
         /// 再生中のセグメントが終わったらタイマー経由で次の行へ。
         /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
+        /// <param name="sender">イベント送信元オブジェクト</param>
+        /// <param name="e">イベントパラメータ</param>
         private void PlaybackTimer_Tick(object? sender, EventArgs e)
         {
             _playbackTimer?.Stop();
@@ -493,8 +495,8 @@ namespace ProgressusInLinguaAnglica
         /// <summary>
         /// インデックス／サブインデックスの制御子のストップマーカー(先頭バイト)が1x以外なら、そこで一旦停止。
         /// </summary>
-        /// <param name="item"></param>
-        /// <returns></returns>
+        /// <param name="item">セグメントリスト要素</param>
+        /// <returns>ストップマーカーか (bool 値)</returns>
         private static bool HasStopMarker(SegmentListItem item)
         {
             uint value = 0;
