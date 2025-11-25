@@ -3,6 +3,27 @@
 namespace ProgressusInLinguaAnglica.Model
 {
     /// <summary>
+    /// 連続再生フラグ
+    /// </summary>
+    public enum PlaybackContinuation
+    {
+        Stop,           // 先頭バイト x0
+        NextIndex,      // 先頭バイト x1
+        NextSubIndex    // 先頭バイト x2
+    }
+
+    /// <summary>
+    /// セグメント種別
+    /// </summary>
+    public enum SegmentKind
+    {
+        Regular,        // 2バイト目 0x01 その他
+        Question,       // 2バイト目 0x09
+        CorrectAnswer,  // 2バイト目 0x05
+        WrongAnswer     // 2バイト目 0x03
+    }
+
+    /// <summary>
     /// トラック構造定義 - TBLファイル、トラック、インデックス、サブインデックスの階層構造および再生用のセグメント情報を定義する。
     /// </summary>
     public sealed class TrackTable
@@ -86,6 +107,16 @@ namespace ProgressusInLinguaAnglica.Model
         public int? EndFrame { get; set; }
 
         /// <summary>
+        /// 連続再生フラグ
+        /// </summary>
+        public PlaybackContinuation PlaybackContinuation { get; set; }
+        
+        /// <summary>
+        /// セグメント種別フラグ
+        /// </summary>
+        public SegmentKind SegmentKind { get; set; }
+
+        /// <summary>
         /// サブインデックスリスト
         /// </summary>
         public List<TrackSubIndex> SubIndices { get; } = new();
@@ -140,6 +171,16 @@ namespace ProgressusInLinguaAnglica.Model
         /// サブインデックスの終了フレームの最終バイト (用途不明)
         /// </summary>
         public byte EndByte { get; init; }
+
+        /// <summary>
+        /// 連続再生フラグ
+        /// </summary>
+        public PlaybackContinuation PlaybackContinuation { get; set; }
+
+        /// <summary>
+        /// セグメント種別フラグ
+        /// </summary>
+        public SegmentKind SegmentKind { get; set; }
     }
 
     /// <summary>

@@ -144,10 +144,14 @@ namespace ProgressusInLinguaAnglica.Model
                 if (pairPos + 8 > indxEnd)
                     break;
 
+                DecodeControlWord(ctrl, out var playback, out var kind);
+
                 var index = new TrackIndex
                 {
                     IndexNumber = i,                 // 0 始まり
                     ControlWord = ctrl,
+                    PlaybackContinuation = playback,
+                    SegmentKind = kind,
                     RawOffset = indxPos,
                     RawLength = indxEnd - indxPos,
                     ControlOffset = controlOffset,
@@ -266,11 +270,15 @@ namespace ProgressusInLinguaAnglica.Model
                     if (endFrame < startFrame)
                         (startFrame, endFrame) = (endFrame, startFrame);
 
+                    DecodeControlWord(subCtrl, out var playback, out var kind);
+
                     var sub = new TrackSubIndex
                     {
                         SubNumber = i,  // 0 始まり
                         Parent = parentIndex,
                         ControlWord = subCtrl,
+                        PlaybackContinuation = playback,
+                        SegmentKind = kind,
                         RawOffset = subPos,
                         RawLength = subEnd - subPos,
                         StartFrame = startFrame,
@@ -290,6 +298,40 @@ namespace ProgressusInLinguaAnglica.Model
                     });
                 }
             }
+        }
+
+        /// <summary>
+        /// 制御子デコード
+        /// </summary>
+        /// <param name="controlWord">制御子</param>
+        /// <param name="playback">連続再生フラグ</param>
+        /// <param name="kind">種別フラグ</param>
+        private static void DecodeControlWord(uint controlWord, out PlaybackContinuation playback, out SegmentKind kind)
+        {
+            // 制御子を8桁16進に変換 → 必ず8文字になる
+            string hex = controlWord.ToString("X8");
+
+            // 左から1文字目・2文字目の16進数字
+            char c0 = hex[0];
+            char c1 = hex[1];
+
+            // 連続再生フラグ
+            playback = c0 switch
+            {
+                '1' => PlaybackContinuation.NextIndex,     // 次のインデックス
+                '2' => PlaybackContinuation.NextSubIndex, // 次のサブインデックス
+                _ => PlaybackContinuation.Stop          // 0やその他 → ストップ
+            };
+
+            // 種別フラグ
+            kind = c1 switch
+            {
+                '1' => SegmentKind.Regular,
+                '9' => SegmentKind.Question,
+                '5' => SegmentKind.CorrectAnswer,
+                '3' => SegmentKind.WrongAnswer,
+                _ => SegmentKind.Regular
+            };
         }
 
         /// <summary>
