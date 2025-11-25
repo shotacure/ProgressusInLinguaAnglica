@@ -334,10 +334,13 @@ namespace ProgressusInLinguaAnglica
             string idxText = index.IndexNumber.ToString("00");
             string s = TblParser.FormatFrameAsTimeWithSector(seg.StartFrame, seg.StartByte);
             string e = TblParser.FormatFrameAsTimeWithSector(seg.EndFrame, seg.StartByte);
-            string idxCtrl = index.ControlWord.ToString("X8");
+
+            // チャネルと制御子は一旦、表示しない
+            // string idxCtrl = index.ControlWord.ToString("X8");
+            // string tail = $"/ ch{track.Header.Channel:00} / {idxCtrl}"; 
 
             // [001]-(00) 43:28_25<00> - 44:38_74<00> / ch00 / 01000000
-            return $"[{chapNo:000}]-({idxText}) {s} - {e} / ch{track.Header.Channel:00} / {idxCtrl}";
+            return $"[{chapNo:000}]-({idxText}) {s} - {e}";
         }
 
         /// <summary>
@@ -356,8 +359,9 @@ namespace ProgressusInLinguaAnglica
             string s = TblParser.FormatFrameAsTimeWithSector(sub.StartFrame, sub.StartByte);
             string e = TblParser.FormatFrameAsTimeWithSector(sub.EndFrame, sub.EndByte);
 
-            string subCtrl = sub.ControlWord.ToString("X8");
-            string tail = $"/ ch{track.Header.Channel:00} / {subCtrl}";
+            // チャネルと制御子は一旦、表示しない
+            // string subCtrl = sub.ControlWord.ToString("X8");
+            // string tail = $"/ ch{track.Header.Channel:00} / {subCtrl}"; 
 
             // 全部 80000000 で特に意味ないので省略
             //// インデックス内の先頭サブインデックスの行だけ、インデックス制御子も後ろにつける
@@ -368,7 +372,7 @@ namespace ProgressusInLinguaAnglica
             //}
 
             // [001]-(00-00) 43:28_25 - 44:38_74 / ch00 / mode00 / subCtrl[/ idxCtrl]
-            return $"[{chapNo:000}]-({idxText}-{subText}) {s} - {e} {tail}";
+            return $"[{chapNo:000}]-({idxText}-{subText}) {s} - {e}";
         }
 
         /// <summary>

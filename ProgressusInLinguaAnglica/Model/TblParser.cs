@@ -421,7 +421,9 @@ namespace ProgressusInLinguaAnglica.Model
             int totalSeconds = frame / 75;
             int ss = totalSeconds % 60;
             int mm = totalSeconds / 60;
-            return $"{mm:00}:{ss:00}_{ff:00}<{lastByte.ToString("X2")}>";
+            double mil = (double)ff / 75.00;
+            string last_byte = $"<{lastByte.ToString("X2")}>"; // 用途不明、一旦表示しない
+            return $"{mm:00}:{ss:00}{mil:.00}";
         }
     }
 }
