@@ -8,17 +8,16 @@ namespace ProgressusInLinguaAnglica.Model
     {
         /// <summary>
         /// TBL ファイルをパースして TrackTable に変換する。
-        /// TRCK / INDX / SUB0 のフォーマット仕様に沿って、
-        /// インデックスとサブインデックスの時間情報を抽出する。
+        /// TRCK / INDX / SUB0 のフォーマット仕様に沿って、インデックスとサブインデックスの時間情報を抽出する。
         /// </summary>
-        /// <param name="path"></param>
-        /// <returns></returns>
+        /// <param name="path">.TBLのファイルパス</param>
+        /// <returns>トラックテーブル</returns>
         public static TrackTable? Parse(string path)
         {
             byte[] data = File.ReadAllBytes(path);
             if (data.Length < 0x20) return null;
 
-            // --- TRCK: チャプターヘッダ ---
+            // --- TRCK: トラックヘッダ ---
             if (!MatchTag(data, 0, "TRCK"))
                 return null;
 
@@ -35,7 +34,7 @@ namespace ProgressusInLinguaAnglica.Model
             int indxPos = FindChunk(data, "INDX", 0x10);
             if (indxPos < 0)
             {
-                // INDX が無いチャプターというのはほぼ無いはずだが、一応ヘッダだけ返す
+                // INDX が無いトラックというのはほぼ無いはずだが、一応ヘッダだけ返す
                 return table;
             }
 
@@ -55,10 +54,10 @@ namespace ProgressusInLinguaAnglica.Model
         //=====================================================================
 
         /// <summary>
-        /// トラックヘッダのパース
+        /// トラックヘッダーのパース
         /// </summary>
-        /// <param name="data"></param>
-        /// <returns></returns>
+        /// <param name="data">データのバイト列</param>
+        /// <returns>トラックヘッダー</returns>
         private static TrackHeader ParseTrackHeader(byte[] data)
         {
             // TRCK:
@@ -90,12 +89,12 @@ namespace ProgressusInLinguaAnglica.Model
         //=====================================================================
 
         /// <summary>
-        /// INDX チャンクと、そこから参照される SUB0 チャンクをパースする。
+        /// インデックスのチャンクと、そこから参照されるサブインデックスのチャンクをパースする。
         /// ここで TrackIndex / TrackSubIndex の階層構造と、Segment のフラットビューを両方作る。
         /// </summary>
-        /// <param name="data"></param>
-        /// <param name="indxPos"></param>
-        /// <param name="table"></param>
+        /// <param name="data">データのバイト列</param>
+        /// <param name="indxPos">INDXの位置</param>
+        /// <param name="table">トラックテーブル</param>
         private static void ParseIndxAndSubChunks(byte[] data, int indxPos, TrackTable table)
         {
             // INDX ヘッダ:
@@ -145,10 +144,14 @@ namespace ProgressusInLinguaAnglica.Model
                 if (pairPos + 8 > indxEnd)
                     break;
 
+                DecodeControlWord(ctrl, out var playback, out var kind);
+
                 var index = new TrackIndex
                 {
                     IndexNumber = i,                 // 0 始まり
                     ControlWord = ctrl,
+                    PlaybackContinuation = playback,
+                    SegmentKind = kind,
                     RawOffset = indxPos,
                     RawLength = indxEnd - indxPos,
                     ControlOffset = controlOffset,
@@ -179,8 +182,8 @@ namespace ProgressusInLinguaAnglica.Model
                 else
                 {
                     // 通常インデックス → start/end 時刻を読む
-                    if (TryParseTimeCode(data, pairPos, out int startFrame) &&
-                        TryParseTimeCode(data, pairPos + 4, out int endFrame))
+                    if (TryParseTimeCode(data, pairPos, out int startFrame, out byte startByte) &&
+                        TryParseTimeCode(data, pairPos + 4, out int endFrame, out byte endByte))
                     {
                         if (endFrame < startFrame)
                             (startFrame, endFrame) = (endFrame, startFrame);
@@ -192,7 +195,9 @@ namespace ProgressusInLinguaAnglica.Model
                         {
                             Index = table.Segments.Count,
                             StartFrame = startFrame,
+                            StartByte = startByte,
                             EndFrame = endFrame,
+                            EndByte = endByte,
                             SourceIndex = index,
                             SourceSubIndex = null
                         });
@@ -217,10 +222,10 @@ namespace ProgressusInLinguaAnglica.Model
         /// <summary>
         /// SUB0 チャンクをパースし、サブインデックスの start/end をTrackSubIndex と Segment の両方として追加する。
         /// </summary>
-        /// <param name="data"></param>
-        /// <param name="subPos"></param>
-        /// <param name="table"></param>
-        /// <param name="parentIndex"></param>
+        /// <param name="data">データのバイト列</param>
+        /// <param name="subPos">SUB0の位置</param>
+        /// <param name="table">トラックテーブル</param>
+        /// <param name="parentIndex">親インデックス</param>
         private static void ParseSub0Chunk(byte[] data, int subPos, TrackTable table, TrackIndex parentIndex)
         {
             // SUB0:
@@ -259,21 +264,27 @@ namespace ProgressusInLinguaAnglica.Model
 
                 uint subCtrl = ReadBe32u(data, ctrlStart + 4 * i);
 
-                if (TryParseTimeCode(data, pairPos, out int startFrame) &&
-                    TryParseTimeCode(data, pairPos + 4, out int endFrame))
+                if (TryParseTimeCode(data, pairPos, out int startFrame, out byte startByte) &&
+                    TryParseTimeCode(data, pairPos + 4, out int endFrame, out byte endByte))
                 {
                     if (endFrame < startFrame)
                         (startFrame, endFrame) = (endFrame, startFrame);
+
+                    DecodeControlWord(subCtrl, out var playback, out var kind);
 
                     var sub = new TrackSubIndex
                     {
                         SubNumber = i,  // 0 始まり
                         Parent = parentIndex,
                         ControlWord = subCtrl,
+                        PlaybackContinuation = playback,
+                        SegmentKind = kind,
                         RawOffset = subPos,
                         RawLength = subEnd - subPos,
                         StartFrame = startFrame,
-                        EndFrame = endFrame
+                        StartByte = startByte,
+                        EndFrame = endFrame,
+                        EndByte = endByte
                     };
                     parentIndex.SubIndices.Add(sub);
 
@@ -290,12 +301,46 @@ namespace ProgressusInLinguaAnglica.Model
         }
 
         /// <summary>
-        /// 
+        /// 制御子デコード
         /// </summary>
-        /// <param name="data"></param>
-        /// <param name="offset"></param>
-        /// <param name="tag"></param>
-        /// <returns></returns>
+        /// <param name="controlWord">制御子</param>
+        /// <param name="playback">連続再生フラグ</param>
+        /// <param name="kind">種別フラグ</param>
+        private static void DecodeControlWord(uint controlWord, out PlaybackContinuation playback, out SegmentKind kind)
+        {
+            // 制御子を8桁16進に変換 → 必ず8文字になる
+            string hex = controlWord.ToString("X8");
+
+            // 左から1文字目・2文字目の16進数字
+            char c0 = hex[0];
+            char c1 = hex[1];
+
+            // 連続再生フラグ
+            playback = c0 switch
+            {
+                '1' => PlaybackContinuation.NextIndex,     // 次のインデックス
+                '2' => PlaybackContinuation.NextSubIndex, // 次のサブインデックス
+                _ => PlaybackContinuation.Stop          // 0やその他 → ストップ
+            };
+
+            // 種別フラグ
+            kind = c1 switch
+            {
+                '1' => SegmentKind.Regular,
+                '9' => SegmentKind.Question,
+                '5' => SegmentKind.CorrectAnswer,
+                '3' => SegmentKind.WrongAnswer,
+                _ => SegmentKind.Regular
+            };
+        }
+
+        /// <summary>
+        /// 文字列位置確認
+        /// </summary>
+        /// <param name="data">データのバイト列</param>
+        /// <param name="offset">探索オフセット位置</param>
+        /// <param name="tag">探索文字列</param>
+        /// <returns>文字列位置の一致性</returns>
         private static bool MatchTag(byte[] data, int offset, string tag)
         {
             if (offset + 4 > data.Length) return false;
@@ -306,12 +351,12 @@ namespace ProgressusInLinguaAnglica.Model
         }
 
         /// <summary>
-        /// 
+        /// 文字列の位置を返す
         /// </summary>
-        /// <param name="data"></param>
-        /// <param name="tag"></param>
-        /// <param name="start"></param>
-        /// <returns></returns>
+        /// <param name="data">データのバイト列</param>
+        /// <param name="tag">探索文字列</param>
+        /// <param name="start">探索始点</param>
+        /// <returns>文字列の位置、なければ-1</returns>
         private static int FindChunk(byte[] data, string tag, int start)
         {
             for (int i = start; i <= data.Length - 4; i++)
@@ -323,22 +368,22 @@ namespace ProgressusInLinguaAnglica.Model
         }
 
         /// <summary>
-        /// 
+        /// ビッグエンディアン2バイト読み取り
         /// </summary>
-        /// <param name="data"></param>
-        /// <param name="offset"></param>
-        /// <returns></returns>
+        /// <param name="data">データのバイト列</param>
+        /// <param name="offset">オフセット値</param>
+        /// <returns>読み取り数値 (int型)</returns>
         private static int ReadBe16(byte[] data, int offset)
         {
             return (data[offset] << 8) | data[offset + 1];
         }
 
         /// <summary>
-        /// 
+        /// ビッグエンディアン4バイト読み取り (int)
         /// </summary>
-        /// <param name="data"></param>
-        /// <param name="offset"></param>
-        /// <returns></returns>
+        /// <param name="data">データのバイト列</param>
+        /// <param name="offset">オフセット値</param>
+        /// <returns>読み取り数値 (int型)</returns>
         private static int ReadBe32(byte[] data, int offset)
         {
             return (data[offset] << 24) |
@@ -348,32 +393,33 @@ namespace ProgressusInLinguaAnglica.Model
         }
 
         /// <summary>
-        /// 
+        /// ビッグエンディアン4バイト読み取り (uint)
         /// </summary>
-        /// <param name="data"></param>
-        /// <param name="offset"></param>
-        /// <returns></returns>
+        /// <param name="data">データのバイト列</param>
+        /// <param name="offset">オフセット値</param>
+        /// <returns>読み取り数値 (uint型)</returns>
         private static uint ReadBe32u(byte[] data, int offset)
         {
             return (uint)ReadBe32(data, offset);
         }
 
         /// <summary>
-        /// [mm_bcd][ss_bcd][ff_bcd][00] を 75fps のフレーム数に変換。
+        /// [mm_bcd][ss_bcd][ff_bcd][hh] を 75fps のフレーム数に変換。
         /// </summary>
-        /// <param name="data"></param>
-        /// <param name="offset"></param>
-        /// <param name="frame"></param>
+        /// <param name="data">データのバイト列</param>
+        /// <param name="offset">オフセット値</param>
+        /// <param name="frame">フレーム数</param>
+        /// <param name="lastByte">最終バイト (用途不明)</param>
         /// <returns></returns>
-        private static bool TryParseTimeCode(byte[] data, int offset, out int frame)
+        private static bool TryParseTimeCode(byte[] data, int offset, out int frame, out byte lastByte)
         {
-            frame = 0;
+            frame = 0; lastByte = 0;
             if (offset + 4 > data.Length) return false;
 
             byte mmBcd = data[offset + 0];
             byte ssBcd = data[offset + 1];
             byte ffBcd = data[offset + 2];
-            byte flag = data[offset + 3];
+            lastByte = data[offset + 3];
 
             // BCD解釈
             if (!IsBcd(mmBcd) || !IsBcd(ssBcd) || !IsBcd(ffBcd))
@@ -386,10 +432,6 @@ namespace ProgressusInLinguaAnglica.Model
             if (mm < 0 || mm > 99) return false;
             if (ss < 0 || ss > 59) return false;
             if (ff < 0 || ff > 74) return false;
-
-            // 今回の仕様では flag は常に 0x00 とみなしてよい
-            // ⇒なんか知らんが01もあるらしい
-            // if (flag != 0x00) return false;
 
             frame = (mm * 60 + ss) * 75 + ff;
             return true;
@@ -410,17 +452,20 @@ namespace ProgressusInLinguaAnglica.Model
         }
 
         /// <summary>
-        /// フレーム（75fps）を "mm:ss_ff" 形式へ。
+        /// フレーム（75fps）を "mm:ss_ff" 形式へ変換。
         /// </summary>
-        /// <param name="frame"></param>
-        /// <returns></returns>
-        public static string FormatFrameAsTimeWithSector(int frame)
+        /// <param name="frame">フレーム数</param>
+        /// <param name="lastByte">最終バイト (用途不明)</param>
+        /// <returns>フレーム文字列</returns>
+        public static string FormatFrameAsTimeWithSector(int frame, byte lastByte)
         {
             int ff = frame % 75;
             int totalSeconds = frame / 75;
             int ss = totalSeconds % 60;
             int mm = totalSeconds / 60;
-            return $"{mm:00}:{ss:00}_{ff:00}";
+            double mil = (double)ff / 75.00;
+            string last_byte = $"<{lastByte.ToString("X2")}>"; // 用途不明、一旦表示しない
+            return $"{mm:00}:{ss:00}{mil:.00}";
         }
     }
 }

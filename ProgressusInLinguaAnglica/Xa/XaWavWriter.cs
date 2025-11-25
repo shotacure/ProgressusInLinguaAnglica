@@ -7,11 +7,11 @@ namespace ProgressusInLinguaAnglica.Xa
     public static class XaWavWriter
     {
         /// <summary>
-        /// 
+        /// PCM 16 ビットモノラル WAV 書き出し (ファイル)
         /// </summary>
-        /// <param name="path"></param>
-        /// <param name="sampleRate"></param>
-        /// <param name="samples"></param>
+        /// <param name="path">出力ファイルパス</param>
+        /// <param name="sampleRate">サンプリングレート</param>
+        /// <param name="samples">サンプル列</param>
         /// <exception cref="ArgumentNullException"></exception>
         public static void WritePcm16MonoWav(string path, int sampleRate, short[] samples)
         {
@@ -25,12 +25,11 @@ namespace ProgressusInLinguaAnglica.Xa
         }
 
         /// <summary>
-        /// メモリ上のストリームに PCM16 モノラル WAV を書き出す。
-        /// ファイルには保存せず、そのまま SoundPlayer(Stream) 等で使う想定。
+        /// PCM 16 ビットモノラル WAV 書き出し (ストリーム)
         /// </summary>
-        /// <param name="stream"></param>
-        /// <param name="sampleRate"></param>
-        /// <param name="samples"></param>
+        /// <param name="stream">出力ストリーム</param>
+        /// <param name="sampleRate">サンプリングレート</param>
+        /// <param name="samples">サンプル列</param>
         /// <exception cref="ArgumentNullException"></exception>
         /// <exception cref="ArgumentException"></exception>
         public static void WritePcm16MonoWav(Stream stream, int sampleRate, short[] samples)
@@ -44,11 +43,11 @@ namespace ProgressusInLinguaAnglica.Xa
         }
 
         /// <summary>
-        /// 
+        /// PCM 16 ビットモノラル WAV 書き出し
         /// </summary>
-        /// <param name="bw"></param>
-        /// <param name="sampleRate"></param>
-        /// <param name="samples"></param>
+        /// <param name="bw">バイナリライター</param>
+        /// <param name="sampleRate">サンプリングレート</param>
+        /// <param name="samples">サンプル列</param>
         private static void WritePcm16MonoWavCore(BinaryWriter bw, int sampleRate, short[] samples)
         {
             int channels = 1;
@@ -81,6 +80,7 @@ namespace ProgressusInLinguaAnglica.Xa
             bw.Write(Encoding.ASCII.GetBytes("data"));
             bw.Write(dataSize);
 
+            // サンプル書き出しループ
             foreach (short s in samples)
             {
                 bw.Write(s);

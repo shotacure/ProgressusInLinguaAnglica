@@ -4,9 +4,8 @@ using System.Collections.Generic;
 namespace ProgressusInLinguaAnglica.Xa
 {
     /// <summary>
-    /// CD-ROM XA ADPCM (4bit) を PCM16 モノラルにデコードする。
-    /// 入力は「subheader(8) + 2304byte データ + 20 + 4」の 2336バイトセクタを
-    /// 連結したもの（XaRiffReader.ReadUserData の出力を連結したもの）を想定。
+    /// CD-ROM XA ADPCM (4bit) を PCM16 ビットモノラルにデコードする。
+    /// 入力は「subheader(8) + 2304byte データ + 20 + 4」の 2336バイトセクタを連結したもの（XaRiffReader.ReadUserData の出力を連結したもの）を想定。
     /// </summary>
     public static class XaAdpcmDecoder
     {
@@ -21,15 +20,10 @@ namespace ProgressusInLinguaAnglica.Xa
         private const int SamplesPerPortionPerChannel = 224; // 4ブロック × 2ニブル × 28サンプル
 
         /// <summary>
-        /// XA ADPCM 生データ（2336 バイトセクタを連結したもの）を PCM16 モノラルに展開する。
+        /// XA ADPCM 生データ（2336 バイトセクターを連結したもの）を PCM16 モノラルに展開する。
         /// </summary>
-        /// <param name="xaData">
-        /// XaRiffReader.ReadUserData で取得した 2336 バイトの配列を
-        /// 複数セクタぶん連結したもの。
-        /// </param>
-        /// <param name="sampleRate">
-        /// サンプルレート指定（例: 37800）。ここでは値は保存せず、主にインターフェイス維持用。
-        /// </param>
+        /// <param name="xaData">XaRiffReader.ReadUserData で取得した 2336 バイトの配列を複数セクターぶん連結したもの。</param>
+        /// <param name="sampleRate">サンプルレート指定（例: 18900）。ここでは値は保存せず、主にインターフェイス維持用。</param>
         public static short[] DecodeMono(byte[] xaData, int sampleRate)
         {
             if (xaData is null) throw new ArgumentNullException(nameof(xaData));
@@ -50,13 +44,13 @@ namespace ProgressusInLinguaAnglica.Xa
         }
 
         /// <summary>
-        /// 2336 バイト XA セクタを 1 つデコードして、PCM を samples に追記する（モノラル専用）。
+        /// 2336 バイト XA セクターを 1 つデコードして、PCM を samples に追記する（モノラル専用）。
         /// </summary>
-        /// <param name="sector"></param>
-        /// <param name="sectorOffset"></param>
-        /// <param name="samples"></param>
-        /// <param name="old"></param>
-        /// <param name="older"></param>
+        /// <param name="sector">セクター全体のバイト列データ。</param>
+        /// <param name="sectorOffset">セクターデータ開始位置のオフセット値。</param>
+        /// <param name="samples">デコードされたPCMサンプルデータ（short型）を追記するためのリスト。</param>
+        /// <param name="old">予測フィルタの前回のサンプル値（デコード状態をセクタ間で引き継ぐための参照渡し）。</param>
+        /// <param name="older">予測フィルタの前々回のサンプル値（デコード状態をセクタ間で引き継ぐための参照渡し）。</param>
         private static void DecodeXaSector2336(
             byte[] sector,
             int sectorOffset,
@@ -134,16 +128,16 @@ namespace ProgressusInLinguaAnglica.Xa
         }
 
         /// <summary>
-        /// 1 ポーション内の 28 サンプル (1 ブロック・1 ニブル分) をデコード。
+        /// 1 ポーション内の 28 サンプル (1 ブロック・1 ニブル分) を ADPCM デコードする。
         /// </summary>
-        /// <param name="sector"></param>
-        /// <param name="portionOffset"></param>
-        /// <param name="blk"></param>
-        /// <param name="nibble"></param>
-        /// <param name="dst"></param>
-        /// <param name="dstIndex"></param>
-        /// <param name="old"></param>
-        /// <param name="older"></param>
+        /// <param name="sector">セクターのバイト列データ。</param>
+        /// <param name="portionOffset">現在のポーション開始位置のオフセット。</param>
+        /// <param name="blk">処理対象のブロック番号 (0-3)。</param>
+        /// <param name="nibble">処理対象のニブル種別 (0=LO / 1=HI)。</param>
+        /// <param name="dst">デコード結果のPCMサンプルを格納する出力Span。</param>
+        /// <param name="dstIndex">dstへの書き込み開始インデックス（参照渡し）。</param>
+        /// <param name="old">予測フィルタの前回のサンプル値（デコード状態を引き継ぐための参照渡し）。</param>
+        /// <param name="older">予測フィルタの前々回のサンプル値（デコード状態を引き継ぐための参照渡し）。</param>
         private static void Decode28Nibbles(
             byte[] sector,
             int portionOffset,

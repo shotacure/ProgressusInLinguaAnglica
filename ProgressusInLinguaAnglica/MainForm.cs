@@ -9,6 +9,9 @@ using ProgressusInLinguaAnglica.Xa;
 
 namespace ProgressusInLinguaAnglica
 {
+    /// <summary>
+    /// メインフォーム
+    /// </summary>
     public partial class MainForm : Form
     {
         private string? _rootPath;
@@ -39,7 +42,7 @@ namespace ProgressusInLinguaAnglica
         }
 
         /// <summary>
-        /// 
+        /// コンストラクタ
         /// </summary>
         public MainForm()
         {
@@ -47,62 +50,62 @@ namespace ProgressusInLinguaAnglica
 
             // 再生用タイマー（1セグメント再生終了後に次の行へ進む）
             _playbackTimer = new System.Windows.Forms.Timer();
-            _playbackTimer.Interval = 213; // 16 / 75 * 1000
+            _playbackTimer.Interval = 500;
             _playbackTimer.Tick += PlaybackTimer_Tick;
         }
 
         /// <summary>
-        /// 
+        /// ファイルメニュー - フォルダを開く
         /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
+        /// <param name="sender">イベント送信元オブジェクト</param>
+        /// <param name="e">イベントパラメータ</param>
         private void menuFileOpenFolder_Click(object? sender, EventArgs e)
         {
             BrowseAndLoadFolder();
         }
 
         /// <summary>
-        /// 
+        /// ファイルメニュー - 終了
         /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
+        /// <param name="sender">イベント送信元オブジェクト</param>
+        /// <param name="e">イベントパラメータ</param>
         private void menuFileExit_Click(object? sender, EventArgs e)
         {
             Close();
         }
 
         /// <summary>
-        /// 
+        /// 参照ボタン
         /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
+        /// <param name="sender">イベント送信元オブジェクト</param>
+        /// <param name="e">イベントパラメータ</param>
         private void btnBrowseFolder_Click(object? sender, EventArgs e)
         {
             BrowseAndLoadFolder();
         }
-        
+
         /// <summary>
-        /// 
+        /// リストボックスダブルクリック
         /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
+        /// <param name="sender">イベント送信元オブジェクト</param>
+        /// <param name="e">イベントパラメータ</param>
         private void lstChapters_DoubleClick(object? sender, EventArgs e)
         {
             PlaySelectedChapter();
         }
 
         /// <summary>
-        /// 
+        /// 再生ボタンクリック
         /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
+        /// <param name="sender">イベント送信元オブジェクト</param>
+        /// <param name="e">イベントパラメータ</param>
         private void btnPlaySelected_Click(object? sender, EventArgs e)
         {
             PlaySelectedChapter();
         }
 
         /// <summary>
-        /// 
+        /// ファイル参照ダイアログ表示
         /// </summary>
         private void BrowseAndLoadFolder()
         {
@@ -118,9 +121,9 @@ namespace ProgressusInLinguaAnglica
         }
 
         /// <summary>
-        /// 
+        /// ディスク読み取り
         /// </summary>
-        /// <param name="path"></param>
+        /// <param name="path">ディスクディレクトリのパス</param>
         private void LoadRoot(string path)
         {
             try
@@ -183,7 +186,7 @@ namespace ProgressusInLinguaAnglica
         }
 
         /// <summary>
-        /// 
+        /// 初期化
         /// </summary>
         private void ClearState()
         {
@@ -208,7 +211,7 @@ namespace ProgressusInLinguaAnglica
 
 
         /// <summary>
-        /// 
+        /// 選択チャプター再生
         /// </summary>
         private void PlaySelectedChapter()
         {
@@ -231,8 +234,7 @@ namespace ProgressusInLinguaAnglica
         }
 
         /// <summary>
-        /// _tracks から、インデックス／サブインデックス単位のセグメント一覧を組み立てて
-        /// lstChapters に流し込む。
+        /// _tracks から、インデックス／サブインデックス単位のセグメント一覧を組み立てて lstChapters に流し込む。
         /// </summary>
         private void RebuildSegmentListItems()
         {
@@ -320,42 +322,53 @@ namespace ProgressusInLinguaAnglica
         }
 
         /// <summary>
-        /// 
+        /// インデックス行成形する
         /// </summary>
-        /// <param name="chapNo"></param>
-        /// <param name="index"></param>
-        /// <param name="seg"></param>
-        /// <param name="track"></param>
-        /// <returns></returns>
+        /// <param name="chapNo">チャプター番号</param>
+        /// <param name="index">インデックス</param>
+        /// <param name="seg">セグメント</param>
+        /// <param name="track">トラックテーブル</param>
+        /// <returns>インデックス行文字列</returns>
         private static string FormatIndexLine(int chapNo, TrackIndex index, Segment seg, TrackTable track)
         {
             string idxText = index.IndexNumber.ToString("00");
-            string s = TblParser.FormatFrameAsTimeWithSector(seg.StartFrame);
-            string e = TblParser.FormatFrameAsTimeWithSector(seg.EndFrame);
-            string idxCtrl = index.ControlWord.ToString("X8");
+            string s = TblParser.FormatFrameAsTimeWithSector(seg.StartFrame, seg.StartByte);
+            string e = TblParser.FormatFrameAsTimeWithSector(seg.EndFrame, seg.StartByte);
 
-            // [001]-(00) 43:28_25 - 44:38_74 / ch00 / mode00 / 01000000
-            return $"[{chapNo:000}]-({idxText}) {s} - {e} / ch{track.Header.Channel:00} / {idxCtrl}";
+            string icons = GetControlIcons(index.PlaybackContinuation, index.SegmentKind);
+            string iconPart = string.IsNullOrEmpty(icons) ? "" : $" {icons}";
+
+            // チャネルと制御子は一旦、表示しない
+            // string idxCtrl = index.ControlWord.ToString("X8");
+            // string tail = $"/ ch{track.Header.Channel:00} / {idxCtrl}"; 
+
+            // [001]-(00) 43:28.25 - 44:38.74 ⏬ など
+            return $"[{chapNo:000}]-({idxText}) {s} - {e}{iconPart}";
         }
 
         /// <summary>
-        /// 
+        /// サブインデックス行成形
         /// </summary>
-        /// <param name="chapNo"></param>
-        /// <param name="index"></param>
-        /// <param name="sub"></param>
-        /// <param name="track"></param>
-        /// <param name="isFirstInIndex"></param>
+        /// <param name="chapNo">チャプター番号</param>
+        /// <param name="index">インデックス</param>
+        /// <param name="sub">サブインデックス</param>
+        /// <param name="track">トラックテーブル</param>
+        /// <param name="isFirstInIndex">インデックスの先頭サブインデックスか</param>
         /// <returns></returns>
         private static string FormatSubIndexLine(int chapNo, TrackIndex index, TrackSubIndex sub, TrackTable track, bool isFirstInIndex)
         {
             string idxText = index.IndexNumber.ToString("00");
             string subText = sub.SubNumber.ToString("00");
-            string s = TblParser.FormatFrameAsTimeWithSector(sub.StartFrame);
-            string e = TblParser.FormatFrameAsTimeWithSector(sub.EndFrame);
+            string s = TblParser.FormatFrameAsTimeWithSector(sub.StartFrame, sub.StartByte);
+            string e = TblParser.FormatFrameAsTimeWithSector(sub.EndFrame, sub.EndByte);
 
-            string subCtrl = sub.ControlWord.ToString("X8");
-            string tail = $"/ ch{track.Header.Channel:00} / {subCtrl}";
+            // サブインデックス自身のフラグを優先
+            string icons = GetControlIcons(sub.PlaybackContinuation, sub.SegmentKind);
+            string iconPart = string.IsNullOrEmpty(icons) ? "" : $" {icons}";
+
+            // チャネルと制御子は一旦、表示しない
+            // string subCtrl = sub.ControlWord.ToString("X8");
+            // string tail = $"/ ch{track.Header.Channel:00} / {subCtrl}"; 
 
             // 全部 80000000 で特に意味ないので省略
             //// インデックス内の先頭サブインデックスの行だけ、インデックス制御子も後ろにつける
@@ -365,8 +378,8 @@ namespace ProgressusInLinguaAnglica
             //    tail += $" / {idxCtrl}";
             //}
 
-            // [001]-(00-00) 43:28_25 - 44:38_74 / ch00 / mode00 / subCtrl[/ idxCtrl]
-            return $"[{chapNo:000}]-({idxText}-{subText}) {s} - {e} {tail}";
+            // [001]-(00-00) 43:28.25 - 44:38.74 ❓🔽 など
+            return $"[{chapNo:000}]-({idxText}-{subText}) {s} - {e}{iconPart}";
         }
 
         /// <summary>
@@ -444,22 +457,22 @@ namespace ProgressusInLinguaAnglica
                 _currentAudioStream.Position = 0;
 
                 _currentSegmentIndex = listIndex;
-                lstChapters.SelectedIndex = listIndex; // ★再生中のセグメント行を選択状態にする
+                lstChapters.SelectedIndex = listIndex; // 再生中のセグメント行を選択状態にする
 
                 statusLabel.Text = item.DisplayText;
                 _player = new SoundPlayer(_currentAudioStream);
                 _player.Play(); // 非同期再生
 
                 // このセグメントの制御子がストップマーカーを持つなら、ここで一旦停止（次の自動再生は行わない）
-                bool stopAfter = HasStopMarker(item);
+                var (playback, kind) = GetSegmentFlags(item);
 
-                if (!stopAfter)
+                if (playback != PlaybackContinuation.Stop)
                 {
                     // セグメント長から次セグメントの再生開始タイミングをだいたい計算
                     int lengthMs = Math.Max(100, (int)(pcm.Length * 1000.0 / sampleRate));
                     if (_playbackTimer is not null)
                     {
-                        _playbackTimer.Interval = lengthMs + 213; // ちょっとマージン
+                        _playbackTimer.Interval = lengthMs + 500;
                         _playbackTimer.Start();
                     }
                 }
@@ -478,12 +491,12 @@ namespace ProgressusInLinguaAnglica
         /// <summary>
         /// 再生中のセグメントが終わったらタイマー経由で次の行へ。
         /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
+        /// <param name="sender">イベント送信元オブジェクト</param>
+        /// <param name="e">イベントパラメータ</param>
         private void PlaybackTimer_Tick(object? sender, EventArgs e)
         {
             _playbackTimer?.Stop();
-            int next = _currentSegmentIndex + 1;
+            int next = GetNextSegmentIndex(_currentSegmentIndex);
             if (next >= 0 && next < _segmentItems.Count)
             {
                 StartPlaybackForSegment(next);
@@ -491,23 +504,146 @@ namespace ProgressusInLinguaAnglica
         }
 
         /// <summary>
-        /// インデックス／サブインデックスの制御子のストップマーカー(先頭バイト)が1x以外なら、そこで一旦停止。
+        /// セグメントフラグ取得
         /// </summary>
         /// <param name="item"></param>
         /// <returns></returns>
-        private static bool HasStopMarker(SegmentListItem item)
+        private static (PlaybackContinuation playback, SegmentKind kind) GetSegmentFlags(SegmentListItem item)
         {
-            uint value = 0;
-            if (item.Segment.SourceSubIndex is not null)
+            if (item.Segment.SourceSubIndex is TrackSubIndex sub)
             {
-                value = item.Segment.SourceSubIndex.ControlWord;
-            }
-            else if (item.Segment.SourceIndex is not null)
-            {
-                value = item.Segment.SourceIndex.ControlWord;
+                return (sub.PlaybackContinuation, sub.SegmentKind);
             }
 
-            return value < 0x10000000U;
+            if (item.Segment.SourceIndex is TrackIndex idx)
+            {
+                return (idx.PlaybackContinuation, idx.SegmentKind);
+            }
+
+            return (PlaybackContinuation.Stop, SegmentKind.Regular);
+        }
+
+
+        /// <summary>
+        /// 次の再生セグメントを取得
+        /// </summary>
+        /// <param name="current">現在のセグメント位置</param>
+        /// <returns>次の再生セグメント位置</returns>
+        private int GetNextSegmentIndex(int current)
+        {
+            if (current < 0 || current >= _segmentItems.Count)
+                return -1;
+
+            var item = _segmentItems[current];
+            var (playback, kind) = GetSegmentFlags(item);
+
+            switch (playback)
+            {
+                case PlaybackContinuation.Stop:
+                    return -1;
+
+                case PlaybackContinuation.NextSubIndex:
+                    return FindNextSubIndex(current);
+
+                case PlaybackContinuation.NextIndex:
+                    return FindNextIndex(current);
+
+                default:
+                    return -1;
+            }
+        }
+
+        /// <summary>
+        /// 次の再生サブインデックスを探索
+        /// </summary>
+        /// <param name="current">現在のセグメント位置</param>
+        /// <returns>次の再生サブインデックス位置</returns>
+        private int FindNextSubIndex(int current)
+        {
+            var curr = _segmentItems[current];
+
+            // 次の行が同じインデックスに属し、サブ番号が +1 ならそれを選ぶ
+            for (int i = current + 1; i < _segmentItems.Count; i++)
+            {
+                var next = _segmentItems[i];
+
+                if (next.Segment.SourceIndex?.IndexNumber == curr.Segment.SourceIndex?.IndexNumber &&
+                    next.Segment.SourceSubIndex != null &&
+                    curr.Segment.SourceSubIndex != null &&
+                    next.Segment.SourceSubIndex.SubNumber == curr.Segment.SourceSubIndex.SubNumber + 1)
+                {
+                    return i;
+                }
+                else
+                {
+                    // インデックス変わったらサブインデックス終了
+                    break;
+                }
+            }
+
+            return -1;
+        }
+
+        /// <summary>
+        /// 次の再生インデックスを探索
+        /// </summary>
+        /// <param name="current">現在のセグメント位置</param>
+        /// <returns>次の再生インデックス位置</returns>
+        private int FindNextIndex(int current)
+        {
+            var curr = _segmentItems[current];
+            int currentIdx = curr.Segment.SourceIndex?.IndexNumber ?? -1;
+
+            for (int i = current + 1; i < _segmentItems.Count; i++)
+            {
+                var next = _segmentItems[i];
+                int nextIdx = next.Segment.SourceIndex?.IndexNumber ?? -1;
+
+                // インデックス番号が増えたらその最初の行
+                if (nextIdx > currentIdx)
+                    return i;
+            }
+
+            return -1;
+        }
+
+
+        /// <summary>
+        /// アイコン生成ヘルパー
+        /// </summary>
+        /// <param name="playback">連続再生フラグ</param>
+        /// <param name="kind">種別フラグ</param>
+        /// <returns>アイコン</returns>
+        private static string GetControlIcons(PlaybackContinuation playback, SegmentKind kind)
+        {
+            string icons = "";
+
+            // 種別
+            switch (kind)
+            {
+                case SegmentKind.Question:
+                    icons += "❓";
+                    break;
+                case SegmentKind.CorrectAnswer:
+                    icons += "⭕";
+                    break;
+                case SegmentKind.WrongAnswer:
+                    icons += "❌";
+                    break;
+            }
+
+            // 連続再生フラグ
+            switch (playback)
+            {
+                case PlaybackContinuation.NextSubIndex:
+                    icons += "🔽";
+                    break;
+                case PlaybackContinuation.NextIndex:
+                    icons += "⏬";
+                    break;
+            }
+
+            return icons;
         }
     }
 }

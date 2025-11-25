@@ -15,6 +15,12 @@ namespace ProgressusInLinguaAnglica.Xa
         public int DataSize { get; }
         public int SectorCount => DataSize / SectorSize;
 
+        /// <summary>
+        /// XA RIFF リーダー
+        /// </summary>
+        /// <param name="path">SOUND.RTFのファイルパス</param>
+        /// <exception cref="ArgumentNullException">ファイルパス指定なし</exception>
+        /// <exception cref="InvalidDataException">データ不正</exception>
         public XaRiffReader(string path)
         {
             if (path is null) throw new ArgumentNullException(nameof(path));

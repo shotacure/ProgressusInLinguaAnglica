@@ -4,8 +4,14 @@ using System.IO;
 
 namespace ProgressusInLinguaAnglica.Xa
 {
+    /// <summary>
+    /// 
+    /// </summary>
     public sealed class XaSectorIndex
     {
+        /// <summary>
+        /// 
+        /// </summary>
         public sealed class SectorInfo
         {
             public long SectorIndex { get; init; }
@@ -20,11 +26,19 @@ namespace ProgressusInLinguaAnglica.Xa
         private readonly List<SectorInfo> _sectors = new();
         private readonly Dictionary<int, List<SectorInfo>> _byChannel = new();
 
+        /// <summary>
+        /// セクターごとのインデックスを作成する
+        /// </summary>
+        /// <param name="riff">XA RIFFリーダー</param>
         public XaSectorIndex(XaRiffReader riff)
         {
             BuildIndex(riff);
         }
 
+        /// <summary>
+        /// セクターごとのインデックスを作成する
+        /// </summary>
+        /// <param name="riff">XA RIFFリーダー</param>
         private void BuildIndex(XaRiffReader riff)
         {
             const int sectorSize = 2352;
@@ -90,6 +104,11 @@ namespace ProgressusInLinguaAnglica.Xa
             }
         }
 
+        /// <summary>
+        /// BCD を int に変換する
+        /// </summary>
+        /// <param name="b">バイト</param>
+        /// <returns>int 型数値</returns>
         private static int BcdToInt(byte b)
         {
             int hi = (b >> 4) & 0xF;
@@ -98,8 +117,12 @@ namespace ProgressusInLinguaAnglica.Xa
         }
 
         /// <summary>
-        /// 指定チャネルかつフレーム範囲に含まれるセクタ一覧。
+        /// 指定チャネルかつフレーム範囲に含まれるセクターの列挙を返す
         /// </summary>
+        /// <param name="channel">チャネル</param>
+        /// <param name="startFrame">開始フレーム</param>
+        /// <param name="endFrame">終了フレーム</param>
+        /// <returns>セクター列挙</returns>
         public IEnumerable<SectorInfo> GetSectors(int channel, int startFrame, int endFrame)
         {
             if (!_byChannel.TryGetValue(channel, out var list))
