@@ -50,7 +50,7 @@ namespace ProgressusInLinguaAnglica
 
             // 再生用タイマー（1セグメント再生終了後に次の行へ進む）
             _playbackTimer = new System.Windows.Forms.Timer();
-            _playbackTimer.Interval = 213; // 16 / 75 * 1000
+            _playbackTimer.Interval = 500;
             _playbackTimer.Tick += PlaybackTimer_Tick;
         }
 
@@ -461,7 +461,7 @@ namespace ProgressusInLinguaAnglica
                     int lengthMs = Math.Max(100, (int)(pcm.Length * 1000.0 / sampleRate));
                     if (_playbackTimer is not null)
                     {
-                        _playbackTimer.Interval = lengthMs + 213; // ちょっとマージン
+                        _playbackTimer.Interval = lengthMs + 500;
                         _playbackTimer.Start();
                     }
                 }
