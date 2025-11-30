@@ -65,26 +65,39 @@ namespace ProgressusInLinguaAnglica.Xa
             byte subMode = sector[sectorOffset + 2];
             byte codingInfo = sector[sectorOffset + 3];
 
-            bool isAudio = (subMode & 0x04) != 0;
+            // SubMode 解析
+            bool isEOF = (subMode & 0x80) != 0;
+            bool isRealTime = (subMode & 0x40) != 0;
             bool isForm2 = (subMode & 0x20) != 0;
+            bool isTrigger = (subMode & 0x10) != 0;
+            bool isData = (subMode & 0x08) != 0;
+            bool isAudio = (subMode & 0x04) != 0;
+            bool isVideo = (subMode & 0x02) != 0;
+            bool isEOR = (subMode & 0x01) != 0;
 
-            if (!isAudio || !isForm2)
+            if (!isForm2 || !isAudio)
             {
-                // 音声でも Form2 でもない → このセクタはスキップ
+                // Form2 でも音声でもない → このセクタはスキップ
                 return;
             }
 
             // CodingInfo 解析
-            int monoStereoBits = codingInfo & 0x03;
-            bool isStereo = monoStereoBits == 1;
-            bool isMono = monoStereoBits == 0;
-
-            bool is18900Hz = (codingInfo & 0x04) != 0; // bit2
-            // ここでは sampleRate は外からもらうので、coding からのサンプルレートは参照しない
-
+            
+            bool isEmphasis = (codingInfo & 0x40) != 0;
+            
             int bitsCode = (codingInfo >> 4) & 0x03;
-            bool is4Bit = bitsCode == 0;
-            bool is8Bit = bitsCode == 1;
+            bool is4Bit = bitsCode == 0b00;
+            bool is8Bit = bitsCode == 0b01;
+
+            // ここでは sampleRate は外からもらうので、coding からのサンプルレートは参照しない
+            int sampleCode = (codingInfo >> 2) & 0x03;
+            bool is38700Hz = sampleCode == 0b00;
+            bool is18900Hz = sampleCode == 0b01;
+
+            int monoStereoBits = codingInfo & 0x03;
+            bool isMono = monoStereoBits == 0b00;
+            bool isStereo = monoStereoBits == 0b01;
+
 
             if (!is4Bit)
             {
