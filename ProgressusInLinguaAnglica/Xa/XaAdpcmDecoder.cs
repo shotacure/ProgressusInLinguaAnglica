@@ -123,10 +123,9 @@ namespace ProgressusInLinguaAnglica.Xa
                 int localOld = old;
                 int localOlder = older;
 
-                for (int blk = 0; blk < 4; blk++)
+                for (int blk = 0; blk < 8; blk++)
                 {
-                    Decode28Nibbles(sector, portionOffset, blk, 0, mono, ref dstIndex, ref localOld, ref localOlder);
-                    Decode28Nibbles(sector, portionOffset, blk, 1, mono, ref dstIndex, ref localOld, ref localOlder);
+                    Decode28Nibbles(sector, portionOffset, blk, mono, ref dstIndex, ref localOld, ref localOlder);
                 }
 
                 // セクタをまたぐときも予測フィルタが繋がるように、state を更新
@@ -145,8 +144,7 @@ namespace ProgressusInLinguaAnglica.Xa
         /// </summary>
         /// <param name="sector">セクターのバイト列データ。</param>
         /// <param name="portionOffset">現在のポーション開始位置のオフセット。</param>
-        /// <param name="blk">処理対象のブロック番号 (0-3)。</param>
-        /// <param name="nibble">処理対象のニブル種別 (0=LO / 1=HI)。</param>
+        /// <param name="blk">処理対象のブロック番号 (0-7)。規格上の番号-1。</param>
         /// <param name="dst">デコード結果のPCMサンプルを格納する出力Span。</param>
         /// <param name="dstIndex">dstへの書き込み開始インデックス（参照渡し）。</param>
         /// <param name="old">予測フィルタの前回のサンプル値（デコード状態を引き継ぐための参照渡し）。</param>
@@ -155,14 +153,13 @@ namespace ProgressusInLinguaAnglica.Xa
             byte[] sector,
             int portionOffset,
             int blk,
-            int nibble, // 0 = LO, 1 = HI
             Span<short> dst,
             ref int dstIndex,
             ref int old,
             ref int older)
         {
-            // ヘッダバイト：portionOffset + 4 + blk*2 + nibble
-            byte header = sector[portionOffset + 4 + blk * 2 + nibble];
+            // ヘッダバイト：portionOffset + 4 + blk
+            byte header = sector[portionOffset + 4 + blk];
 
             int shift = 12 - (header & 0x0F);
             if (shift < 0) shift = 9; // 13以上は強制9
@@ -178,11 +175,11 @@ namespace ProgressusInLinguaAnglica.Xa
 
             for (int j = 0; j < 28; j++)
             {
-                // データワード：portionOffset + 16 + blk + j*4
-                byte data = sector[portionOffset + 16 + blk + j * 4];
+                // データワード：portionOffset + 16 + (blk / 2) + j*4
+                byte data = sector[portionOffset + 16 + (blk / 2) + j * 4];
                 int nib;
 
-                if (nibble == 0)
+                if (blk % 2 == 0)
                 {
                     nib = data & 0x0F; // LO
                 }
