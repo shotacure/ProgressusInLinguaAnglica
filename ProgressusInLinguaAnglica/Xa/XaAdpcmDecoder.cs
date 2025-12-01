@@ -65,26 +65,39 @@ namespace ProgressusInLinguaAnglica.Xa
             byte subMode = sector[sectorOffset + 2];
             byte codingInfo = sector[sectorOffset + 3];
 
-            bool isAudio = (subMode & 0x04) != 0;
+            // SubMode 解析
+            bool isEOF = (subMode & 0x80) != 0;
+            bool isRealTime = (subMode & 0x40) != 0;
             bool isForm2 = (subMode & 0x20) != 0;
+            bool isTrigger = (subMode & 0x10) != 0;
+            bool isData = (subMode & 0x08) != 0;
+            bool isAudio = (subMode & 0x04) != 0;
+            bool isVideo = (subMode & 0x02) != 0;
+            bool isEOR = (subMode & 0x01) != 0;
 
-            if (!isAudio || !isForm2)
+            if (!isForm2 || !isAudio)
             {
-                // 音声でも Form2 でもない → このセクタはスキップ
+                // Form2 でも音声でもない → このセクタはスキップ
                 return;
             }
 
             // CodingInfo 解析
-            int monoStereoBits = codingInfo & 0x03;
-            bool isStereo = monoStereoBits == 1;
-            bool isMono = monoStereoBits == 0;
-
-            bool is18900Hz = (codingInfo & 0x04) != 0; // bit2
-            // ここでは sampleRate は外からもらうので、coding からのサンプルレートは参照しない
-
+            
+            bool isEmphasis = (codingInfo & 0x40) != 0;
+            
             int bitsCode = (codingInfo >> 4) & 0x03;
-            bool is4Bit = bitsCode == 0;
-            bool is8Bit = bitsCode == 1;
+            bool is4Bit = bitsCode == 0b00;
+            bool is8Bit = bitsCode == 0b01;
+
+            // ここでは sampleRate は外からもらうので、coding からのサンプルレートは参照しない
+            int sampleCode = (codingInfo >> 2) & 0x03;
+            bool is38700Hz = sampleCode == 0b00;
+            bool is18900Hz = sampleCode == 0b01;
+
+            int monoStereoBits = codingInfo & 0x03;
+            bool isMono = monoStereoBits == 0b00;
+            bool isStereo = monoStereoBits == 0b01;
+
 
             if (!is4Bit)
             {
@@ -110,10 +123,9 @@ namespace ProgressusInLinguaAnglica.Xa
                 int localOld = old;
                 int localOlder = older;
 
-                for (int blk = 0; blk < 4; blk++)
+                for (int blk = 0; blk < 8; blk++)
                 {
-                    Decode28Nibbles(sector, portionOffset, blk, 0, mono, ref dstIndex, ref localOld, ref localOlder);
-                    Decode28Nibbles(sector, portionOffset, blk, 1, mono, ref dstIndex, ref localOld, ref localOlder);
+                    Decode28Nibbles(sector, portionOffset, blk, mono, ref dstIndex, ref localOld, ref localOlder);
                 }
 
                 // セクタをまたぐときも予測フィルタが繋がるように、state を更新
@@ -132,8 +144,7 @@ namespace ProgressusInLinguaAnglica.Xa
         /// </summary>
         /// <param name="sector">セクターのバイト列データ。</param>
         /// <param name="portionOffset">現在のポーション開始位置のオフセット。</param>
-        /// <param name="blk">処理対象のブロック番号 (0-3)。</param>
-        /// <param name="nibble">処理対象のニブル種別 (0=LO / 1=HI)。</param>
+        /// <param name="blk">処理対象のブロック番号 (0-7)。規格上の番号-1。</param>
         /// <param name="dst">デコード結果のPCMサンプルを格納する出力Span。</param>
         /// <param name="dstIndex">dstへの書き込み開始インデックス（参照渡し）。</param>
         /// <param name="old">予測フィルタの前回のサンプル値（デコード状態を引き継ぐための参照渡し）。</param>
@@ -142,17 +153,16 @@ namespace ProgressusInLinguaAnglica.Xa
             byte[] sector,
             int portionOffset,
             int blk,
-            int nibble, // 0 = LO, 1 = HI
             Span<short> dst,
             ref int dstIndex,
             ref int old,
             ref int older)
         {
-            // ヘッダバイト：portionOffset + 4 + blk*2 + nibble
-            byte header = sector[portionOffset + 4 + blk * 2 + nibble];
+            // ヘッダバイト：portionOffset + 4 + blk
+            byte header = sector[portionOffset + 4 + blk];
 
             int shift = 12 - (header & 0x0F);
-            if (shift < 0) shift = 0; // 保険
+            if (shift < 0) shift = 9; // 13以上は強制9
 
             int filter = (header & 0x30) >> 4;
             if (filter < 0 || filter >= PosTable.Length)
@@ -165,11 +175,11 @@ namespace ProgressusInLinguaAnglica.Xa
 
             for (int j = 0; j < 28; j++)
             {
-                // データワード：portionOffset + 16 + blk + j*4
-                byte data = sector[portionOffset + 16 + blk + j * 4];
+                // データワード：portionOffset + 16 + (blk / 2) + j*4
+                byte data = sector[portionOffset + 16 + (blk / 2) + j * 4];
                 int nib;
 
-                if (nibble == 0)
+                if (blk % 2 == 0)
                 {
                     nib = data & 0x0F; // LO
                 }
