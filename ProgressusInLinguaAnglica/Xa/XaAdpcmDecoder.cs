@@ -165,7 +165,7 @@ namespace ProgressusInLinguaAnglica.Xa
             byte header = sector[portionOffset + 4 + blk * 2 + nibble];
 
             int shift = 12 - (header & 0x0F);
-            if (shift < 0) shift = 0; // 保険
+            if (shift < 0) shift = 9; // 13以上は強制9
 
             int filter = (header & 0x30) >> 4;
             if (filter < 0 || filter >= PosTable.Length)
