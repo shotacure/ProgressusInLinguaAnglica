@@ -561,17 +561,15 @@ namespace ProgressusInLinguaAnglica
             {
                 var next = _segmentItems[i];
 
-                if (next.Segment.SourceIndex?.IndexNumber == curr.Segment.SourceIndex?.IndexNumber &&
-                    next.Segment.SourceSubIndex != null &&
+                // インデックス変わったらサブインデックス終了
+                if (next.Segment.SourceIndex?.IndexNumber != curr.Segment.SourceIndex?.IndexNumber)
+                    break;
+
+                if (next.Segment.SourceSubIndex != null &&
                     curr.Segment.SourceSubIndex != null &&
                     next.Segment.SourceSubIndex.SubNumber == curr.Segment.SourceSubIndex.SubNumber + 1)
                 {
                     return i;
-                }
-                else
-                {
-                    // インデックス変わったらサブインデックス終了
-                    break;
                 }
             }
 
