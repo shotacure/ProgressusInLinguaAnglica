@@ -25,7 +25,6 @@ namespace ProgressusInLinguaAnglica
         // 再生状態管理
         private SoundPlayer? _player;
         private MemoryStream? _currentAudioStream;
-        private System.Windows.Forms.Timer? _playbackTimer;
         private int _currentSegmentIndex = -1;
 
         /// <summary>
@@ -47,11 +46,6 @@ namespace ProgressusInLinguaAnglica
         public MainForm()
         {
             InitializeComponent();
-
-            // 再生用タイマー（1セグメント再生終了後に次の行へ進む）
-            _playbackTimer = new System.Windows.Forms.Timer();
-            _playbackTimer.Interval = 500;
-            _playbackTimer.Tick += PlaybackTimer_Tick;
         }
 
         /// <summary>
@@ -198,7 +192,7 @@ namespace ProgressusInLinguaAnglica
             lstChapters.Items.Clear();
 
             // 再生関係のクリーンアップ
-            _playbackTimer?.Stop();
+            tmrPlayBack?.Stop();
             _currentSegmentIndex = -1;
 
             _player?.Stop();
@@ -444,7 +438,7 @@ namespace ProgressusInLinguaAnglica
                 }
 
                 // 既存再生を停止
-                _playbackTimer?.Stop();
+                tmrPlayBack?.Stop();
                 _player?.Stop();
                 _player?.Dispose();
                 _player = null;
@@ -470,10 +464,10 @@ namespace ProgressusInLinguaAnglica
                 {
                     // セグメント長から次セグメントの再生開始タイミングをだいたい計算
                     int lengthMs = Math.Max(100, (int)(pcm.Length * 1000.0 / sampleRate));
-                    if (_playbackTimer is not null)
+                    if (tmrPlayBack is not null)
                     {
-                        _playbackTimer.Interval = lengthMs + 500;
-                        _playbackTimer.Start();
+                        tmrPlayBack.Interval = lengthMs + 500;
+                        tmrPlayBack.Start();
                     }
                 }
             }
@@ -495,7 +489,7 @@ namespace ProgressusInLinguaAnglica
         /// <param name="e">イベントパラメータ</param>
         private void PlaybackTimer_Tick(object? sender, EventArgs e)
         {
-            _playbackTimer?.Stop();
+            tmrPlayBack?.Stop();
             int next = GetNextSegmentIndex(_currentSegmentIndex);
             if (next >= 0 && next < _segmentItems.Count)
             {
@@ -644,6 +638,155 @@ namespace ProgressusInLinguaAnglica
             }
 
             return icons;
+        }
+
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        private void LstChapters_MouseDown(object? sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Right)
+                return;
+
+            int index = lstChapters.IndexFromPoint(e.Location);
+            if (index < 0 || index >= lstChapters.Items.Count)
+                return;
+
+            lstChapters.SelectedIndex = index;
+
+            if (cmnSegment is not null)
+            {
+                cmnSegment.Show(lstChapters, e.Location);
+            }
+        }
+
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        private void SegmentSaveMenuItem_Click(object? sender, EventArgs e)
+        {
+            SaveSelectedSegmentAsWav();
+        }
+
+        /// <summary>
+        /// 現在選択中のセグメントを WAV ファイルとして保存する。
+        /// </summary>
+        private void SaveSelectedSegmentAsWav()
+        {
+            if (_xaIndex is null || _xaRiff is null)
+            {
+                MessageBox.Show(this, "SOUND.RTF が読み込まれていません。", "エラー",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            int idx = lstChapters.SelectedIndex;
+            if (idx < 0 || idx >= _segmentItems.Count)
+            {
+                MessageBox.Show(this, "セグメントを選択してください。", "情報",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var item = _segmentItems[idx];
+            var track = item.Track;
+            var seg = item.Segment;
+
+            int channel = track.Header.Channel;
+            int startFrame = seg.StartFrame;
+            int endFrame = seg.EndFrame;
+
+            if (startFrame >= endFrame)
+            {
+                MessageBox.Show(this, "このセグメントの時間情報が不正です。", "エラー",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            // 保存先ファイル名を決める
+            string defaultFileName;
+            if (item.Segment.SourceSubIndex is not null)
+            {
+                defaultFileName =
+                    $"C{item.ChapterNo:000}_IDX{item.Segment.SourceIndex?.IndexNumber:00}_SUB{item.Segment.SourceSubIndex.SubNumber:00}.wav";
+            }
+            else if (item.Segment.SourceIndex is not null)
+            {
+                defaultFileName =
+                    $"C{item.ChapterNo:000}_IDX{item.Segment.SourceIndex.IndexNumber:00}.wav";
+            }
+            else
+            {
+                defaultFileName = $"C{item.ChapterNo:000}_SEG{idx:000}.wav";
+            }
+
+            using var sfd = new SaveFileDialog
+            {
+                Title = "WAV ファイルとして保存",
+                Filter = "WAV ファイル (*.wav)|*.wav|すべてのファイル (*.*)|*.*",
+                FileName = defaultFileName,
+                AddExtension = true,
+                DefaultExt = "wav",
+                OverwritePrompt = true
+            };
+
+            if (sfd.ShowDialog(this) != DialogResult.OK)
+                return;
+
+            try
+            {
+                statusLabel.Text = "音声抽出中...";
+                Cursor = Cursors.WaitCursor;
+
+                // 指定範囲のセクタを取得
+                var sectors = _xaIndex.GetSectors(channel, startFrame, endFrame).ToList();
+                if (sectors.Count == 0)
+                {
+                    MessageBox.Show(this, "指定範囲に対応するセクタが見つかりませんでした。", "エラー",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+
+                // XA セクタのユーザーデータを全部繋げる
+                using var msXa = new MemoryStream();
+                foreach (var s in sectors)
+                {
+                    var userData = _xaRiff.ReadUserData(s.FileOffset);
+                    msXa.Write(userData, 0, userData.Length);
+                }
+                byte[] xaBytes = msXa.ToArray();
+
+                // XA ADPCM → PCM16 へデコード
+                const int sampleRate = 18900; // 再生時と同じレート
+                short[] pcm = XaAdpcmDecoder.DecodeMono(xaBytes, sampleRate);
+                if (pcm.Length == 0)
+                {
+                    MessageBox.Show(this, "デコード結果が空でした。", "エラー",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+
+                // WAV ファイルとして保存
+                using (var fs = new FileStream(sfd.FileName, FileMode.Create, FileAccess.Write))
+                {
+                    XaWavWriter.WritePcm16MonoWav(fs, sampleRate, pcm);
+                }
+
+                statusLabel.Text = $"保存しました: {Path.GetFileName(sfd.FileName)}";
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"保存中にエラーが発生しました。\r\n{ex.Message}", "エラー",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                Cursor = Cursors.Default;
+            }
         }
     }
 }
