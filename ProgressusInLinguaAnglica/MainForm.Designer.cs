@@ -17,6 +17,9 @@ namespace ProgressusInLinguaAnglica
         private Button btnPlaySelected;
         private Label lblRoot;
         private Label lblChapters;
+        private System.Windows.Forms.Timer tmrPlayBack;
+        private ContextMenuStrip cmnSegment;
+        private ToolStripMenuItem menuSave;
 
         protected override void Dispose(bool disposing)
         {
@@ -41,6 +44,9 @@ namespace ProgressusInLinguaAnglica
             btnPlaySelected = new Button();
             lblRoot = new Label();
             lblChapters = new Label();
+            tmrPlayBack = new System.Windows.Forms.Timer();
+            cmnSegment = new ContextMenuStrip();
+            menuSave = new ToolStripMenuItem();
             menuStrip1.SuspendLayout();
             statusStrip1.SuspendLayout();
             SuspendLayout();
@@ -127,6 +133,7 @@ namespace ProgressusInLinguaAnglica
             lstChapters.Size = new Size(886, 372);
             lstChapters.TabIndex = 6;
             lstChapters.DoubleClick += lstChapters_DoubleClick;
+            lstChapters.MouseDown += LstChapters_MouseDown;
             // 
             // btnPlaySelected
             // 
@@ -157,6 +164,21 @@ namespace ProgressusInLinguaAnglica
             lblChapters.Size = new Size(64, 20);
             lblChapters.TabIndex = 5;
             lblChapters.Text = "チャプター:";
+            //
+            // playbackTimer
+            //
+            tmrPlayBack.Interval = 500;
+            tmrPlayBack.Tick += PlaybackTimer_Tick;
+            //
+            // cmnSegment
+            //
+            cmnSegment.Items.AddRange(new ToolStripMenuItem[] { menuSave });
+            //
+            // menuSave
+            //
+            menuSave.Name = "menuSave";
+            menuSave.Text = "保存(&S)";
+            menuSave.Click += SegmentSaveMenuItem_Click;
             // 
             // MainForm
             // 
