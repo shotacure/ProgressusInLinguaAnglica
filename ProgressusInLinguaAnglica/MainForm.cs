@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Media;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -29,19 +28,8 @@ namespace ProgressusInLinguaAnglica
         // セグメント表示用
         private readonly List<SegmentListItem> _segmentItems = new();
 
-        // 再生状態管理
-        private SoundPlayer? _player;
-        private MemoryStream? _currentAudioStream;
-        private int _currentSegmentIndex = -1;
-
         // 再生サンプルレート（いったん固定値）
         private const int PlaybackSampleRate = 18900;
-
-        // 次セグメントの先読み（連続再生のギャップ低減）
-        private readonly object _prefetchLock = new();
-        private CancellationTokenSource? _prefetchCts;
-        private int _prefetchedIndex = -1;
-        private short[]? _prefetchedPcm;
 
         /// <summary>
         /// リストボックス1行とセグメントの対応付け
@@ -62,6 +50,7 @@ namespace ProgressusInLinguaAnglica
         public MainForm()
         {
             InitializeComponent();
+            InitDevicePanel();
         }
 
         /// <summary>
@@ -72,6 +61,7 @@ namespace ProgressusInLinguaAnglica
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             ClearState();
+            DisposeDevice();
             base.OnFormClosed(e);
         }
 
@@ -292,7 +282,7 @@ namespace ProgressusInLinguaAnglica
         {
             using var dlg = new FolderBrowserDialog
             {
-                Description = "CDリピーター用ディスクがマウントされているドライブ、またはディスクデータのルートフォルダーを選択してください。",
+                Description = "対応ディスクがマウントされているドライブ、またはディスクデータのルートフォルダーを選択してください。",
             };
 
             if (dlg.ShowDialog(this) == DialogResult.OK)
@@ -339,6 +329,9 @@ namespace ProgressusInLinguaAnglica
                 ClearState();
                 return;
             }
+
+            // 表示窓を読み込み中表示に（再生マーク点滅）
+            DeviceOnLoadingStarted();
 
             // Cxxx.TBL を列挙（CHAP.TBL は別用途なので除外）
             var tblFiles = Directory.EnumerateFiles(path, "C*.TBL", SearchOption.TopDirectoryOnly)
@@ -411,6 +404,7 @@ namespace ProgressusInLinguaAnglica
                     statusLabel.Text =
                         $"読み込み完了: チャプター {_tracks.Count} 件 / セグメント {_segmentItems.Count} 件 " +
                         $"（TBL解析 {ms} ms、音声インデックスはオンデマンド）";
+                    DeviceOnLoadingFinished();
                 });
             }, token);
         }
@@ -449,11 +443,21 @@ namespace ProgressusInLinguaAnglica
         {
             _rootPath = null;
 
-            // 進行中の TBL 読み込み・先読みを止める
+            // 進行中の TBL 読み込みを止める
             _loadCts?.Cancel();
             _loadCts?.Dispose();
             _loadCts = null;
-            CancelPrefetch();
+
+            // 再生エンジン・遷移タイマーを停止し、デバイス状態を初期化
+            _engine?.Stop();
+            CancelTransitions();
+            _repeating = false;
+            _selecting = false;
+            _curUnit = -1;
+            _discLoaded = false;
+            _loading = false;
+            _choiceChar = ' ';
+            _mode = DeviceMode.NoDisc;
 
             _locator = null;
             _xaRiff?.Dispose();
@@ -463,21 +467,12 @@ namespace ProgressusInLinguaAnglica
             _segmentItems.Clear();
             lstChapters.Items.Clear();
 
-            // 再生関係のクリーンアップ
-            tmrPlayBack?.Stop();
-            _currentSegmentIndex = -1;
-
-            _player?.Stop();
-            _player?.Dispose();
-            _player = null;
-
-            _currentAudioStream?.Dispose();
-            _currentAudioStream = null;
+            RefreshDisplay();
         }
 
 
         /// <summary>
-        /// 選択チャプター再生
+        /// 選択チャプター再生（リストのダブルクリック等）。
         /// </summary>
         private void PlaySelectedChapter()
         {
@@ -496,7 +491,7 @@ namespace ProgressusInLinguaAnglica
                 return;
             }
 
-            StartPlaybackForSegment(idx);
+            PlayUnitFromList(idx);
         }
 
         /// <summary>
@@ -642,91 +637,6 @@ namespace ProgressusInLinguaAnglica
         }
 
         /// <summary>
-        /// 指定したリスト行（セグメント）を再生開始し、必要なら次の行への連続再生もセットする。
-        /// </summary>
-        /// <param name="listIndex"></param>
-        private void StartPlaybackForSegment(int listIndex)
-        {
-            if (_locator is null || _xaRiff is null)
-                return;
-            if (listIndex < 0 || listIndex >= _segmentItems.Count)
-                return;
-
-            var item = _segmentItems[listIndex];
-            var seg = item.Segment;
-
-            if (seg.StartFrame >= seg.EndFrame)
-            {
-                MessageBox.Show(this, "このセグメントの時間情報が不正です。", "エラー",
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return;
-            }
-
-            try
-            {
-                // まず先読み済み PCM を使えるか確認。無ければここでオンデマンド抽出＋デコード。
-                short[]? pcm = TakePrefetched(listIndex);
-                if (pcm is null)
-                {
-                    statusLabel.Text = "音声抽出中...";
-                    Cursor = Cursors.WaitCursor;
-                    pcm = DecodeSegmentPcm(item);
-                    Cursor = Cursors.Default;
-                }
-
-                if (pcm.Length == 0)
-                {
-                    MessageBox.Show(this, "指定範囲の音声が取得できませんでした。", "エラー",
-                        MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    return;
-                }
-
-                // 既存再生を停止
-                tmrPlayBack?.Stop();
-                _player?.Stop();
-                _player?.Dispose();
-                _player = null;
-                _currentAudioStream?.Dispose();
-                _currentAudioStream = null;
-
-                // メモリ上に WAV を構築して再生
-                _currentAudioStream = new MemoryStream();
-                XaWavWriter.WritePcm16MonoWav(_currentAudioStream, PlaybackSampleRate, pcm);
-                _currentAudioStream.Position = 0;
-
-                _currentSegmentIndex = listIndex;
-                lstChapters.SelectedIndex = listIndex; // 再生中のセグメント行を選択状態にする
-
-                statusLabel.Text = item.DisplayText;
-                _player = new SoundPlayer(_currentAudioStream);
-                _player.Play(); // 非同期再生
-
-                // このセグメントの制御子がストップマーカーを持つなら、ここで一旦停止（次の自動再生は行わない）
-                var (playback, kind) = GetSegmentFlags(item);
-
-                if (playback != PlaybackContinuation.Stop)
-                {
-                    // 次セグメントを今のうちにバックグラウンドで抽出・デコードしておく（ギャップ低減）
-                    PrefetchNextSegment(listIndex);
-
-                    // セグメント長から次セグメントの再生開始タイミングをだいたい計算
-                    int lengthMs = Math.Max(100, (int)(pcm.Length * 1000.0 / PlaybackSampleRate));
-                    if (tmrPlayBack is not null)
-                    {
-                        tmrPlayBack.Interval = lengthMs + 500;
-                        tmrPlayBack.Start();
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Cursor = Cursors.Default;
-                MessageBox.Show(this, $"再生中にエラーが発生しました。\r\n{ex.Message}", "エラー",
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-        }
-
-        /// <summary>
         /// セグメントの音声をオンデマンドで抽出し、PCM16 モノラルへデコードする。
         /// ファイル I/O・デコードのみで UI には触れないため、バックグラウンドからも呼べる。
         /// </summary>
@@ -745,96 +655,14 @@ namespace ProgressusInLinguaAnglica
         }
 
         /// <summary>
-        /// 連続再生で次に来るセグメントを、バックグラウンドで先読みデコードしておく。
-        /// </summary>
-        /// <param name="currentListIndex">現在再生中のリスト位置</param>
-        private void PrefetchNextSegment(int currentListIndex)
-        {
-            CancelPrefetch();
-
-            int target = GetNextSegmentIndex(currentListIndex);
-            if (target < 0 || target >= _segmentItems.Count)
-                return;
-
-            var item = _segmentItems[target];
-            var cts = new CancellationTokenSource();
-            _prefetchCts = cts;
-            var token = cts.Token;
-
-            Task.Run(() =>
-            {
-                if (token.IsCancellationRequested) return;
-
-                short[] pcm;
-                try
-                {
-                    pcm = DecodeSegmentPcm(item);
-                }
-                catch
-                {
-                    return; // 先読み失敗時は黙って諦める（本再生時に再試行される）
-                }
-
-                if (token.IsCancellationRequested || pcm.Length == 0) return;
-
-                lock (_prefetchLock)
-                {
-                    if (token.IsCancellationRequested) return;
-                    _prefetchedIndex = target;
-                    _prefetchedPcm = pcm;
-                }
-            }, token);
-        }
-
-        /// <summary>
-        /// 指定リスト位置の先読み済み PCM があれば取り出す（取り出したらスロットは空にする）。
-        /// </summary>
-        /// <param name="listIndex">取り出したいリスト位置</param>
-        /// <returns>先読み済み PCM。無ければ null。</returns>
-        private short[]? TakePrefetched(int listIndex)
-        {
-            lock (_prefetchLock)
-            {
-                if (_prefetchedIndex == listIndex && _prefetchedPcm is not null)
-                {
-                    var pcm = _prefetchedPcm;
-                    _prefetchedIndex = -1;
-                    _prefetchedPcm = null;
-                    return pcm;
-                }
-            }
-            return null;
-        }
-
-        /// <summary>
-        /// 進行中の先読みをキャンセルし、先読みスロットを空にする。
-        /// </summary>
-        private void CancelPrefetch()
-        {
-            _prefetchCts?.Cancel();
-            _prefetchCts?.Dispose();
-            _prefetchCts = null;
-
-            lock (_prefetchLock)
-            {
-                _prefetchedIndex = -1;
-                _prefetchedPcm = null;
-            }
-        }
-
-        /// <summary>
-        /// 再生中のセグメントが終わったらタイマー経由で次の行へ。
+        /// 旧 SoundPlayer 方式のタイマー連続再生は廃止（NAudio エンジン側で処理）。
+        /// Designer がイベントを参照しているため空ハンドラだけ残す。
         /// </summary>
         /// <param name="sender">イベント送信元オブジェクト</param>
         /// <param name="e">イベントパラメータ</param>
         private void PlaybackTimer_Tick(object? sender, EventArgs e)
         {
             tmrPlayBack?.Stop();
-            int next = GetNextSegmentIndex(_currentSegmentIndex);
-            if (next >= 0 && next < _segmentItems.Count)
-            {
-                StartPlaybackForSegment(next);
-            }
         }
 
         /// <summary>
