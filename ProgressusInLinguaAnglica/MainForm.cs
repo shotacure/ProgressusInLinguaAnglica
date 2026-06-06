@@ -1,8 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Media;
+using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using ProgressusInLinguaAnglica.Model;
 using ProgressusInLinguaAnglica.Xa;
@@ -16,8 +20,11 @@ namespace ProgressusInLinguaAnglica
     {
         private string? _rootPath;
         private XaRiffReader? _xaRiff;
-        private XaSectorIndex? _xaIndex;
+        private XaSectorLocator? _locator;
         private readonly List<TrackTable> _tracks = new();
+
+        // TBL のバックグラウンド読み込み制御
+        private CancellationTokenSource? _loadCts;
 
         // セグメント表示用
         private readonly List<SegmentListItem> _segmentItems = new();
@@ -26,6 +33,15 @@ namespace ProgressusInLinguaAnglica
         private SoundPlayer? _player;
         private MemoryStream? _currentAudioStream;
         private int _currentSegmentIndex = -1;
+
+        // 再生サンプルレート（いったん固定値）
+        private const int PlaybackSampleRate = 18900;
+
+        // 次セグメントの先読み（連続再生のギャップ低減）
+        private readonly object _prefetchLock = new();
+        private CancellationTokenSource? _prefetchCts;
+        private int _prefetchedIndex = -1;
+        private short[]? _prefetchedPcm;
 
         /// <summary>
         /// リストボックス1行とセグメントの対応付け
@@ -46,6 +62,177 @@ namespace ProgressusInLinguaAnglica
         public MainForm()
         {
             InitializeComponent();
+        }
+
+        /// <summary>
+        /// フォームを閉じるときに、開きっぱなしのファイルハンドルや
+        /// バックグラウンド処理を確実に後始末する。
+        /// </summary>
+        /// <param name="e">イベントパラメータ</param>
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            ClearState();
+            base.OnFormClosed(e);
+        }
+
+        //=====================================================================
+        //  CD 自動認識（メディア挿入/取り出しの検知）
+        //=====================================================================
+
+        private const int WM_DEVICECHANGE = 0x0219;
+        private const int DBT_DEVICEARRIVAL = 0x8000;        // メディア・デバイスの挿入完了
+        private const int DBT_DEVICEREMOVECOMPLETE = 0x8004; // メディア・デバイスの取り出し完了
+        private const int DBT_DEVTYP_VOLUME = 0x0002;        // ボリューム（ドライブ）
+
+        /// <summary>
+        /// 起動時、既にディスクが入っているドライブがあれば認識して読み込む。
+        /// </summary>
+        /// <param name="e">イベントパラメータ</param>
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            TryAutoLoadReadyDisc();
+        }
+
+        /// <summary>
+        /// デバイス変更メッセージ（CD の挿入/取り出し）を監視する。
+        /// </summary>
+        /// <param name="m">ウィンドウメッセージ</param>
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WM_DEVICECHANGE
+                && m.LParam != IntPtr.Zero
+                && Marshal.ReadInt32(m.LParam, 4) == DBT_DEVTYP_VOLUME)
+            {
+                long evt = m.WParam.ToInt64();
+                int unitMask = Marshal.ReadInt32(m.LParam, 12);
+                var driveRoots = UnitMaskToDriveRoots(unitMask);
+
+                if (evt == DBT_DEVICEARRIVAL)
+                {
+                    // 挿入直後はメディアがまだ読めないことがあるため、少し待ちつつ判定する。
+                    ScheduleDiscDetection(driveRoots);
+                }
+                else if (evt == DBT_DEVICEREMOVECOMPLETE)
+                {
+                    OnVolumeRemoved(driveRoots); // WndProc は UI スレッド
+                }
+            }
+
+            base.WndProc(ref m);
+        }
+
+        /// <summary>
+        /// ユニットマスク（ビット0=A:, ビット1=B:, ...）をドライブのルートパス一覧に変換する。
+        /// </summary>
+        /// <param name="unitMask">DEV_BROADCAST_VOLUME のユニットマスク</param>
+        /// <returns>ルートパス（例: "D:\"）の一覧</returns>
+        private static List<string> UnitMaskToDriveRoots(int unitMask)
+        {
+            var roots = new List<string>();
+            for (int i = 0; i < 26; i++)
+            {
+                if ((unitMask & (1 << i)) != 0)
+                    roots.Add($"{(char)('A' + i)}:\\");
+            }
+            return roots;
+        }
+
+        /// <summary>
+        /// 挿入されたボリュームを少し待ちつつ繰り返し確認し、
+        /// SOUND.RTF を持つドライブが見つかったら読み込む。
+        /// </summary>
+        /// <param name="driveRoots">挿入されたドライブのルートパス一覧</param>
+        private void ScheduleDiscDetection(List<string> driveRoots)
+        {
+            Task.Run(async () =>
+            {
+                // メディアがマウントされるまで数回リトライする。
+                for (int attempt = 0; attempt < 6; attempt++)
+                {
+                    foreach (var root in driveRoots)
+                    {
+                        if (HasSoundRtf(root))
+                        {
+                            PostToUi(CancellationToken.None, () =>
+                            {
+                                statusLabel.Text = $"ディスクを認識しました: {root}";
+                                LoadRoot(root);
+                            });
+                            return;
+                        }
+                    }
+
+                    await Task.Delay(800).ConfigureAwait(false);
+                }
+            });
+        }
+
+        /// <summary>
+        /// 取り出されたドライブが現在読み込み中のディスクなら、状態を破棄して
+        /// ファイルハンドルを解放する。
+        /// </summary>
+        /// <param name="driveRoots">取り出されたドライブのルートパス一覧</param>
+        private void OnVolumeRemoved(List<string> driveRoots)
+        {
+            if (_rootPath is null) return;
+
+            string? currentRoot = Path.GetPathRoot(_rootPath);
+            if (string.IsNullOrEmpty(currentRoot)) return;
+
+            foreach (var root in driveRoots)
+            {
+                if (string.Equals(Path.GetPathRoot(root), currentRoot, StringComparison.OrdinalIgnoreCase))
+                {
+                    ClearState();
+                    statusLabel.Text = "ディスクが取り出されました。";
+                    return;
+                }
+            }
+        }
+
+        /// <summary>
+        /// 起動時用：準備完了済みの CD-ROM ドライブから SOUND.RTF 入りのものを探して読み込む。
+        /// </summary>
+        private void TryAutoLoadReadyDisc()
+        {
+            try
+            {
+                foreach (var drive in DriveInfo.GetDrives())
+                {
+                    if (drive.DriveType != DriveType.CDRom || !drive.IsReady)
+                        continue;
+
+                    string root = drive.RootDirectory.FullName;
+                    if (HasSoundRtf(root))
+                    {
+                        statusLabel.Text = $"ディスクを認識しました: {root}";
+                        LoadRoot(root);
+                        return;
+                    }
+                }
+            }
+            catch
+            {
+                // 起動時スキャンの失敗は致命的ではないので無視する。
+            }
+        }
+
+        /// <summary>
+        /// 指定ルート直下に SOUND.RTF が存在するか。メディア未準備等は false 扱い。
+        /// </summary>
+        /// <param name="root">ドライブのルートパス</param>
+        /// <returns>SOUND.RTF があれば true</returns>
+        private static bool HasSoundRtf(string root)
+        {
+            try
+            {
+                return Directory.EnumerateFiles(root, "SOUND.RTF*", SearchOption.TopDirectoryOnly).Any();
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         /// <summary>
@@ -120,62 +307,138 @@ namespace ProgressusInLinguaAnglica
         /// <param name="path">ディスクディレクトリのパス</param>
         private void LoadRoot(string path)
         {
+            // 前回の読み込み・再生状態を破棄（ファイルハンドルもここで閉じる）
+            ClearState();
+
+            statusLabel.Text = "解析中...";
+
+            _rootPath = path;
+            txtRootPath.Text = path;
+
+            // SOUND.RTF を探す
+            var soundPath = Directory.EnumerateFiles(path, "SOUND.RTF*", SearchOption.TopDirectoryOnly)
+                                     .FirstOrDefault();
+            if (soundPath is null)
+            {
+                MessageBox.Show(this, "SOUND.RTF が見つかりませんでした。", "エラー",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                ClearState();
+                return;
+            }
+
             try
             {
-                statusLabel.Text = "解析中...";
-                Cursor = Cursors.WaitCursor;
-
-                _rootPath = path;
-                txtRootPath.Text = path;
-
-                // SOUND.RTF を探す
-                var soundPath = Directory.EnumerateFiles(path, "SOUND.RTF*", SearchOption.TopDirectoryOnly)
-                                         .FirstOrDefault();
-                if (soundPath is null)
-                {
-                    MessageBox.Show(this, "SOUND.RTF が見つかりませんでした。", "エラー",
-                        MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    ClearState();
-                    return;
-                }
-
+                // RIFF ヘッダと先頭セクタだけ読む。全走査しないので即座に開く。
                 _xaRiff = new XaRiffReader(soundPath);
-                _xaIndex = new XaSectorIndex(_xaRiff);
-                statusLabel.Text = "SOUND.RTF インデックス作成完了";
+                _locator = new XaSectorLocator(_xaRiff);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"SOUND.RTF の読み込みに失敗しました。\r\n{ex.Message}", "エラー",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                ClearState();
+                return;
+            }
 
-                // Cxxx.TBL を列挙（CHAP.TBL は別用途なので除外）
-                var tblFiles = Directory.EnumerateFiles(path, "C*.TBL", SearchOption.TopDirectoryOnly)
-                                        .Where(f => !string.Equals(Path.GetFileName(f), "CHAP.TBL",
-                                                                   StringComparison.OrdinalIgnoreCase))
-                                        .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
-                                        .ToList();
+            // Cxxx.TBL を列挙（CHAP.TBL は別用途なので除外）
+            var tblFiles = Directory.EnumerateFiles(path, "C*.TBL", SearchOption.TopDirectoryOnly)
+                                    .Where(f => !string.Equals(Path.GetFileName(f), "CHAP.TBL",
+                                                               StringComparison.OrdinalIgnoreCase))
+                                    .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
+                                    .ToList();
 
-                _tracks.Clear();
-                foreach (var tblPath in tblFiles)
+            // TBL の解析はバックグラウンドで行い、リストへ逐次追加していく。
+            _loadCts = new CancellationTokenSource();
+            LoadTracksInBackground(tblFiles, _loadCts.Token);
+        }
+
+        /// <summary>
+        /// TBL ファイル群をバックグラウンドで順次解析し、解析できたトラックから
+        /// リスト（チャプター行）へ逐次反映する。UI はブロックしない。
+        /// </summary>
+        /// <param name="tblFiles">TBL ファイルパスの一覧（ソート済み）</param>
+        /// <param name="token">キャンセルトークン</param>
+        private void LoadTracksInBackground(List<string> tblFiles, CancellationToken token)
+        {
+            Task.Run(() =>
+            {
+                var sw = Stopwatch.StartNew();
+
+                for (int i = 0; i < tblFiles.Count; i++)
                 {
+                    if (token.IsCancellationRequested) return;
+
+                    TrackTable? track = null;
                     try
                     {
-                        var track = TblParser.Parse(tblPath);
-                        if (track is not null)
-                        {
-                            _tracks.Add(track);
-                        }
+                        track = TblParser.Parse(tblFiles[i]);
                     }
                     catch
                     {
                         // 解析できない TBL はとりあえずスキップ
                     }
+
+                    if (track is null) continue;
+
+                    // このトラックぶんのリスト行を組み立てて UI スレッドへ渡す。
+                    int fallbackChapNo = i + 1;
+                    var items = BuildSegmentItemsForTrack(track, fallbackChapNo);
+
+                    if (token.IsCancellationRequested) return;
+
+                    PostToUi(token, () =>
+                    {
+                        _tracks.Add(track);
+                        if (items.Count > 0)
+                        {
+                            _segmentItems.AddRange(items);
+                            lstChapters.BeginUpdate();
+                            foreach (var it in items)
+                                lstChapters.Items.Add(it);
+                            lstChapters.EndUpdate();
+                        }
+                        statusLabel.Text =
+                            $"TBL 解析中... チャプター {_tracks.Count} 件 / セグメント {_segmentItems.Count} 件";
+                    });
                 }
 
-                RebuildSegmentListItems();
+                sw.Stop();
+                long ms = sw.ElapsedMilliseconds;
+                if (token.IsCancellationRequested) return;
 
+                PostToUi(token, () =>
+                {
+                    statusLabel.Text =
+                        $"読み込み完了: チャプター {_tracks.Count} 件 / セグメント {_segmentItems.Count} 件 " +
+                        $"（TBL解析 {ms} ms、音声インデックスはオンデマンド）";
+                });
+            }, token);
+        }
 
-
-                statusLabel.Text = $"TBL 解析完了: {_tracks.Count} 件";
-            }
-            finally
+        /// <summary>
+        /// バックグラウンドスレッドから UI スレッドへ処理を投げる。
+        /// フォーム破棄やキャンセルと競合しても落ちないようガードする。
+        /// </summary>
+        /// <param name="token">キャンセルトークン</param>
+        /// <param name="action">UI スレッドで実行する処理</param>
+        private void PostToUi(CancellationToken token, Action action)
+        {
+            if (token.IsCancellationRequested || IsDisposed || !IsHandleCreated) return;
+            try
             {
-                Cursor = Cursors.Default;
+                BeginInvoke(() =>
+                {
+                    if (token.IsCancellationRequested) return;
+                    action();
+                });
+            }
+            catch (ObjectDisposedException)
+            {
+                // フォームが閉じられた直後の競合。無視してよい。
+            }
+            catch (InvalidOperationException)
+            {
+                // ハンドル未作成／破棄との競合。無視してよい。
             }
         }
 
@@ -185,8 +448,17 @@ namespace ProgressusInLinguaAnglica
         private void ClearState()
         {
             _rootPath = null;
+
+            // 進行中の TBL 読み込み・先読みを止める
+            _loadCts?.Cancel();
+            _loadCts?.Dispose();
+            _loadCts = null;
+            CancelPrefetch();
+
+            _locator = null;
+            _xaRiff?.Dispose();
             _xaRiff = null;
-            _xaIndex = null;
+
             _tracks.Clear();
             _segmentItems.Clear();
             lstChapters.Items.Clear();
@@ -209,7 +481,7 @@ namespace ProgressusInLinguaAnglica
         /// </summary>
         private void PlaySelectedChapter()
         {
-            if (_xaIndex is null || _xaRiff is null)
+            if (_locator is null || _xaRiff is null)
             {
                 MessageBox.Show(this, "SOUND.RTF が読み込まれていません。", "エラー",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
@@ -228,91 +500,84 @@ namespace ProgressusInLinguaAnglica
         }
 
         /// <summary>
-        /// _tracks から、インデックス／サブインデックス単位のセグメント一覧を組み立てて lstChapters に流し込む。
+        /// 1 トラック分の、インデックス／サブインデックス単位のセグメント行を組み立てて返す。
+        /// 共有状態には触れないため、バックグラウンドスレッドから呼べる。
         /// </summary>
-        private void RebuildSegmentListItems()
+        /// <param name="track">対象トラック</param>
+        /// <param name="fallbackChapNo">ファイル名から番号を取れない場合のチャプター番号</param>
+        /// <returns>このトラックに対応するリスト行</returns>
+        private static List<SegmentListItem> BuildSegmentItemsForTrack(TrackTable track, int fallbackChapNo)
         {
-            _segmentItems.Clear();
-            lstChapters.Items.Clear();
+            var result = new List<SegmentListItem>();
 
-            for (int i = 0; i < _tracks.Count; i++)
+            // ファイル名から [001] の番号を推測（C001.TBL → 1）
+            int chapNo = fallbackChapNo;
+            var name = track.FileName;
+            if (!string.IsNullOrEmpty(name) &&
+                name.StartsWith("C", StringComparison.OrdinalIgnoreCase))
             {
-                var track = _tracks[i];
-
-                // ファイル名から [001] の番号を推測（C001.TBL → 1）
-                int chapNo = i + 1;
-                var name = track.FileName;
-                if (!string.IsNullOrEmpty(name) &&
-                    name.StartsWith("C", StringComparison.OrdinalIgnoreCase))
+                var numPart = Path.GetFileNameWithoutExtension(name).Substring(1);
+                if (int.TryParse(numPart, out int n))
                 {
-                    var numPart = Path.GetFileNameWithoutExtension(name).Substring(1);
-                    if (int.TryParse(numPart, out int n))
+                    chapNo = n;
+                }
+            }
+
+            // INDX ごとにグループ
+            var groups = track.Segments
+                              .Where(seg => seg.SourceIndex is not null)
+                              .GroupBy(seg => seg.SourceIndex!)
+                              .OrderBy(g => g.Key.IndexNumber);
+
+            foreach (var g in groups)
+            {
+                var index = g.Key;
+
+                var subSegs = g.Where(s => s.SourceSubIndex is not null)
+                               .OrderBy(s => s.SourceSubIndex!.SubNumber)
+                               .ToList();
+
+                var indexSegs = g.Where(s => s.SourceSubIndex is null)
+                                 .OrderBy(s => s.StartFrame)
+                                 .ToList();
+
+                // サブインデックスが無い INDX → インデックス行としてそのまま出す
+                if (subSegs.Count == 0)
+                {
+                    foreach (var seg in indexSegs)
                     {
-                        chapNo = n;
+                        string line = FormatIndexLine(chapNo, index, seg, track);
+                        result.Add(new SegmentListItem
+                        {
+                            Track = track,
+                            Segment = seg,
+                            ChapterNo = chapNo,
+                            DisplayText = line,
+                        });
                     }
                 }
-
-                // INDX ごとにグループ
-                var groups = track.Segments
-                                  .Where(seg => seg.SourceIndex is not null)
-                                  .GroupBy(seg => seg.SourceIndex!)
-                                  .OrderBy(g => g.Key.IndexNumber);
-
-                foreach (var g in groups)
+                else
                 {
-                    var index = g.Key;
-
-                    var subSegs = g.Where(s => s.SourceSubIndex is not null)
-                                   .OrderBy(s => s.SourceSubIndex!.SubNumber)
-                                   .ToList();
-
-                    var indexSegs = g.Where(s => s.SourceSubIndex is null)
-                                     .OrderBy(s => s.StartFrame)
-                                     .ToList();
-
-                    // サブインデックスが無い INDX → インデックス行としてそのまま出す
-                    if (subSegs.Count == 0)
+                    // サブインデックスがある場合 → サブインデックスごとに1行
+                    bool firstSubInIndex = true;
+                    foreach (var seg in subSegs)
                     {
-                        foreach (var seg in indexSegs)
-                        {
-                            string line = FormatIndexLine(chapNo, index, seg, track);
-                            var item = new SegmentListItem
-                            {
-                                Track = track,
-                                Segment = seg,
-                                ChapterNo = chapNo,
-                                DisplayText = line,
-                            };
-                            _segmentItems.Add(item);
-                            lstChapters.Items.Add(item);
-                        }
-                    }
-                    else
-                    {
-                        // サブインデックスがある場合 → サブインデックスごとに1行
-                        bool firstSubInIndex = true;
-                        foreach (var seg in subSegs)
-                        {
-                            var sub = seg.SourceSubIndex!;
-                            string line = FormatSubIndexLine(chapNo, index, sub, track, firstSubInIndex);
-                            firstSubInIndex = false;
+                        var sub = seg.SourceSubIndex!;
+                        string line = FormatSubIndexLine(chapNo, index, sub, track, firstSubInIndex);
+                        firstSubInIndex = false;
 
-                            var item = new SegmentListItem
-                            {
-                                Track = track,
-                                Segment = seg,
-                                ChapterNo = chapNo,
-                                DisplayText = line,
-                            };
-                            _segmentItems.Add(item);
-                            lstChapters.Items.Add(item);
-                        }
+                        result.Add(new SegmentListItem
+                        {
+                            Track = track,
+                            Segment = seg,
+                            ChapterNo = chapNo,
+                            DisplayText = line,
+                        });
                     }
                 }
             }
 
-            statusLabel.Text =
-                $"TBL 解析完了: チャプター {_tracks.Count} 件 / セグメント {_segmentItems.Count} 件";
+            return result;
         }
 
         /// <summary>
@@ -382,21 +647,15 @@ namespace ProgressusInLinguaAnglica
         /// <param name="listIndex"></param>
         private void StartPlaybackForSegment(int listIndex)
         {
-            if (_xaIndex is null || _xaRiff is null)
+            if (_locator is null || _xaRiff is null)
                 return;
             if (listIndex < 0 || listIndex >= _segmentItems.Count)
                 return;
 
             var item = _segmentItems[listIndex];
-            var track = item.Track;
             var seg = item.Segment;
 
-            // セグメントの開始～終了フレーム
-            int channel = track.Header.Channel;
-            int startFrame = seg.StartFrame;
-            int endFrame = seg.EndFrame;
-
-            if (startFrame >= endFrame)
+            if (seg.StartFrame >= seg.EndFrame)
             {
                 MessageBox.Show(this, "このセグメントの時間情報が不正です。", "エラー",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
@@ -405,34 +664,19 @@ namespace ProgressusInLinguaAnglica
 
             try
             {
-                statusLabel.Text = "音声抽出中...";
-                Cursor = Cursors.WaitCursor;
-
-                // 該当区間のセクタ一覧を取得
-                var sectors = _xaIndex.GetSectors(channel, startFrame, endFrame).ToList();
-                if (sectors.Count == 0)
+                // まず先読み済み PCM を使えるか確認。無ければここでオンデマンド抽出＋デコード。
+                short[]? pcm = TakePrefetched(listIndex);
+                if (pcm is null)
                 {
-                    MessageBox.Show(this, "指定範囲に対応するセクタが見つかりませんでした。", "エラー",
-                        MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    return;
+                    statusLabel.Text = "音声抽出中...";
+                    Cursor = Cursors.WaitCursor;
+                    pcm = DecodeSegmentPcm(item);
+                    Cursor = Cursors.Default;
                 }
 
-                // XA セクタのユーザーデータ（2336バイト）を全部繋げる
-                using var msXa = new MemoryStream();
-                foreach (var s in sectors)
-                {
-                    var userData = _xaRiff.ReadUserData(s.FileOffset);
-                    msXa.Write(userData, 0, userData.Length);
-                }
-
-                byte[] xaBytes = msXa.ToArray();
-
-                // XA ADPCM → PCM16
-                const int sampleRate = 18900; // いったん固定値
-                short[] pcm = XaAdpcmDecoder.DecodeMono(xaBytes, sampleRate);
                 if (pcm.Length == 0)
                 {
-                    MessageBox.Show(this, "デコード結果が空でした。", "エラー",
+                    MessageBox.Show(this, "指定範囲の音声が取得できませんでした。", "エラー",
                         MessageBoxButtons.OK, MessageBoxIcon.Error);
                     return;
                 }
@@ -447,7 +691,7 @@ namespace ProgressusInLinguaAnglica
 
                 // メモリ上に WAV を構築して再生
                 _currentAudioStream = new MemoryStream();
-                XaWavWriter.WritePcm16MonoWav(_currentAudioStream, sampleRate, pcm);
+                XaWavWriter.WritePcm16MonoWav(_currentAudioStream, PlaybackSampleRate, pcm);
                 _currentAudioStream.Position = 0;
 
                 _currentSegmentIndex = listIndex;
@@ -462,8 +706,11 @@ namespace ProgressusInLinguaAnglica
 
                 if (playback != PlaybackContinuation.Stop)
                 {
+                    // 次セグメントを今のうちにバックグラウンドで抽出・デコードしておく（ギャップ低減）
+                    PrefetchNextSegment(listIndex);
+
                     // セグメント長から次セグメントの再生開始タイミングをだいたい計算
-                    int lengthMs = Math.Max(100, (int)(pcm.Length * 1000.0 / sampleRate));
+                    int lengthMs = Math.Max(100, (int)(pcm.Length * 1000.0 / PlaybackSampleRate));
                     if (tmrPlayBack is not null)
                     {
                         tmrPlayBack.Interval = lengthMs + 500;
@@ -473,12 +720,105 @@ namespace ProgressusInLinguaAnglica
             }
             catch (Exception ex)
             {
+                Cursor = Cursors.Default;
                 MessageBox.Show(this, $"再生中にエラーが発生しました。\r\n{ex.Message}", "エラー",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
-            finally
+        }
+
+        /// <summary>
+        /// セグメントの音声をオンデマンドで抽出し、PCM16 モノラルへデコードする。
+        /// ファイル I/O・デコードのみで UI には触れないため、バックグラウンドからも呼べる。
+        /// </summary>
+        /// <param name="item">対象セグメント行</param>
+        /// <returns>デコード済み PCM。取得できなければ空配列。</returns>
+        private short[] DecodeSegmentPcm(SegmentListItem item)
+        {
+            var locator = _locator;
+            if (locator is null) return Array.Empty<short>();
+
+            int channel = item.Track.Header.Channel;
+            byte[] xaBytes = locator.ReadSegmentUserData(channel, item.Segment.StartFrame, item.Segment.EndFrame);
+            if (xaBytes.Length == 0) return Array.Empty<short>();
+
+            return XaAdpcmDecoder.DecodeMono(xaBytes, PlaybackSampleRate);
+        }
+
+        /// <summary>
+        /// 連続再生で次に来るセグメントを、バックグラウンドで先読みデコードしておく。
+        /// </summary>
+        /// <param name="currentListIndex">現在再生中のリスト位置</param>
+        private void PrefetchNextSegment(int currentListIndex)
+        {
+            CancelPrefetch();
+
+            int target = GetNextSegmentIndex(currentListIndex);
+            if (target < 0 || target >= _segmentItems.Count)
+                return;
+
+            var item = _segmentItems[target];
+            var cts = new CancellationTokenSource();
+            _prefetchCts = cts;
+            var token = cts.Token;
+
+            Task.Run(() =>
             {
-                Cursor = Cursors.Default;
+                if (token.IsCancellationRequested) return;
+
+                short[] pcm;
+                try
+                {
+                    pcm = DecodeSegmentPcm(item);
+                }
+                catch
+                {
+                    return; // 先読み失敗時は黙って諦める（本再生時に再試行される）
+                }
+
+                if (token.IsCancellationRequested || pcm.Length == 0) return;
+
+                lock (_prefetchLock)
+                {
+                    if (token.IsCancellationRequested) return;
+                    _prefetchedIndex = target;
+                    _prefetchedPcm = pcm;
+                }
+            }, token);
+        }
+
+        /// <summary>
+        /// 指定リスト位置の先読み済み PCM があれば取り出す（取り出したらスロットは空にする）。
+        /// </summary>
+        /// <param name="listIndex">取り出したいリスト位置</param>
+        /// <returns>先読み済み PCM。無ければ null。</returns>
+        private short[]? TakePrefetched(int listIndex)
+        {
+            lock (_prefetchLock)
+            {
+                if (_prefetchedIndex == listIndex && _prefetchedPcm is not null)
+                {
+                    var pcm = _prefetchedPcm;
+                    _prefetchedIndex = -1;
+                    _prefetchedPcm = null;
+                    return pcm;
+                }
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// 進行中の先読みをキャンセルし、先読みスロットを空にする。
+        /// </summary>
+        private void CancelPrefetch()
+        {
+            _prefetchCts?.Cancel();
+            _prefetchCts?.Dispose();
+            _prefetchCts = null;
+
+            lock (_prefetchLock)
+            {
+                _prefetchedIndex = -1;
+                _prefetchedPcm = null;
             }
         }
 
@@ -675,7 +1015,7 @@ namespace ProgressusInLinguaAnglica
         /// </summary>
         private void SaveSelectedSegmentAsWav()
         {
-            if (_xaIndex is null || _xaRiff is null)
+            if (_locator is null || _xaRiff is null)
             {
                 MessageBox.Show(this, "SOUND.RTF が読み込まれていません。", "エラー",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
@@ -691,14 +1031,9 @@ namespace ProgressusInLinguaAnglica
             }
 
             var item = _segmentItems[idx];
-            var track = item.Track;
             var seg = item.Segment;
 
-            int channel = track.Header.Channel;
-            int startFrame = seg.StartFrame;
-            int endFrame = seg.EndFrame;
-
-            if (startFrame >= endFrame)
+            if (seg.StartFrame >= seg.EndFrame)
             {
                 MessageBox.Show(this, "このセグメントの時間情報が不正です。", "エラー",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
@@ -740,30 +1075,11 @@ namespace ProgressusInLinguaAnglica
                 statusLabel.Text = "音声抽出中...";
                 Cursor = Cursors.WaitCursor;
 
-                // 指定範囲のセクタを取得
-                var sectors = _xaIndex.GetSectors(channel, startFrame, endFrame).ToList();
-                if (sectors.Count == 0)
-                {
-                    MessageBox.Show(this, "指定範囲に対応するセクタが見つかりませんでした。", "エラー",
-                        MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    return;
-                }
-
-                // XA セクタのユーザーデータを全部繋げる
-                using var msXa = new MemoryStream();
-                foreach (var s in sectors)
-                {
-                    var userData = _xaRiff.ReadUserData(s.FileOffset);
-                    msXa.Write(userData, 0, userData.Length);
-                }
-                byte[] xaBytes = msXa.ToArray();
-
-                // XA ADPCM → PCM16 へデコード
-                const int sampleRate = 18900; // 再生時と同じレート
-                short[] pcm = XaAdpcmDecoder.DecodeMono(xaBytes, sampleRate);
+                // 指定範囲をオンデマンドで抽出し PCM16 へデコード
+                short[] pcm = DecodeSegmentPcm(item);
                 if (pcm.Length == 0)
                 {
-                    MessageBox.Show(this, "デコード結果が空でした。", "エラー",
+                    MessageBox.Show(this, "指定範囲の音声が取得できませんでした。", "エラー",
                         MessageBoxButtons.OK, MessageBoxIcon.Error);
                     return;
                 }
@@ -771,7 +1087,7 @@ namespace ProgressusInLinguaAnglica
                 // WAV ファイルとして保存
                 using (var fs = new FileStream(sfd.FileName, FileMode.Create, FileAccess.Write))
                 {
-                    XaWavWriter.WritePcm16MonoWav(fs, sampleRate, pcm);
+                    XaWavWriter.WritePcm16MonoWav(fs, PlaybackSampleRate, pcm);
                 }
 
                 statusLabel.Text = $"保存しました: {Path.GetFileName(sfd.FileName)}";
